@@ -207,6 +207,9 @@ export function ComposeForm({
 					return;
 				}
 				setDraftId(data.draft.id);
+				// A new draft changes the Drafts badge; later autosaves of the
+				// same draft do not, so only the first save refreshes counts.
+				if (!draftId) window.dispatchEvent(new Event("mailflare:messages-changed"));
 			}
 		}, 900);
 
