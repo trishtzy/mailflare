@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { MouseEvent } from "react";
-import { ChevronLeft, ChevronRight, ListFilter } from "lucide-react";
+import { ChevronLeft, ChevronRight, ListFilter, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -252,7 +252,8 @@ export function MessageFolderPage({
 	const [unreadOnly, setUnreadOnly] = useState(false);
 	const [conversationView] = useConversationView();
 	const grouped = conversationView && config.folder !== "drafts";
-	const { messages, isLoading, total, limit, updateMessages } = useMessages(config.folder, selectedMailbox?.id, {
+	const [refreshing, setRefreshing] = useState(false);
+	const { messages, isLoading, total, limit, updateMessages, refresh } = useMessages(config.folder, selectedMailbox?.id, {
 		query,
 		limit: pageSize,
 		offset,
@@ -304,6 +305,18 @@ export function MessageFolderPage({
 			emailAddress: mailboxAddress,
 		});
 	}, [config.title, mailboxAddress, mailboxesLoading, titleTotal, titleUnread]);
+
+	async function refreshList() {
+		setRefreshing(true);
+		try {
+			// Counts (sidebar badges) refresh through their own event; the list is awaited so the icon
+			// spins until the fresh page is in state.
+			window.dispatchEvent(new Event("mailflare:message-counts-changed"));
+			await refresh();
+		} finally {
+			setRefreshing(false);
+		}
+	}
 
 	function updateSelectedMessage(messageId: string, selected: boolean) {
 		const message = messages.find((item) => item.id === messageId);
@@ -404,6 +417,18 @@ export function MessageFolderPage({
 						<span className="text-xs text-neutral-500 whitespace-nowrap">
 							{pageRange.start} - {pageRange.end} of {pageRange.total}
 						</span>
+						<Tooltip label="Refresh">
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								disabled={refreshing || isLoading}
+								onClick={() => void refreshList()}
+								aria-label="Refresh messages"
+							>
+								<RefreshCw className={clsx("h-4 w-4", refreshing && "animate-spin")} />
+							</Button>
+						</Tooltip>
 						<Tooltip label="Previous page">
 							<Button
 								variant="ghost"
