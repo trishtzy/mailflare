@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, lt, max, min, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, lte, max, min, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { jmapChangeLog, messages } from "@/db/schema";
 import { parseSeqState } from "./changes-utils";
@@ -43,8 +43,14 @@ function accountCondition(ctx: JmapContext, mailboxIds: string[]): SQL {
 	return mailboxIds.length ? or(inArray(jmapChangeLog.mailboxId, mailboxIds), owner)! : owner;
 }
 
-export async function loadChangeRows(ctx: JmapContext, mailboxIds: string[], since: number, type: "email" | "mailbox" | null): Promise<ChangeLogRow[]> {
-	const conditions = [gt(jmapChangeLog.seq, since), accountCondition(ctx, mailboxIds)];
+/**
+ * Log rows in `(since, upper]` for this account, oldest first. The upper
+ * bound is the sequence the caller will report as its new state, so a change
+ * committed while the request runs waits for the next call instead of being
+ * delivered under a state that does not cover it.
+ */
+export async function loadChangeRows(ctx: JmapContext, mailboxIds: string[], since: number, upper: number, type: "email" | "mailbox" | null): Promise<ChangeLogRow[]> {
+	const conditions = [gt(jmapChangeLog.seq, since), lte(jmapChangeLog.seq, upper), accountCondition(ctx, mailboxIds)];
 	if (type) conditions.push(eq(jmapChangeLog.type, type));
 	const rows = await ctx.db
 		.select({ seq: jmapChangeLog.seq, type: jmapChangeLog.type, objectId: jmapChangeLog.objectId, mailboxId: jmapChangeLog.mailboxId, threadKey: jmapChangeLog.threadKey, kind: jmapChangeLog.kind })

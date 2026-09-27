@@ -13,7 +13,7 @@ import { decodeBlobId, decodeMailboxRef, roleToStatus } from "./ids";
 import { buildEmailObject, loadAttachmentsByMessage, resolveHeaderProperty } from "./email-objects";
 import { importFlags, parseReceivedAt, resolveDraftsMailbox } from "./email-import-utils";
 import { filterToSql, mailboxRefCondition, sortToSql } from "./email-query";
-import { exceedsFetchLimit, loadChangeRows, loadThreadMembers, locateHistory } from "./changes";
+import { currentSeq, exceedsFetchLimit, loadChangeRows, loadThreadMembers, locateHistory } from "./changes";
 import { classifyChanges, classifyThreadChanges, diffQueryResults, formatSeqState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
 import { getEmailState } from "./state";
 import { listAccessibleMailboxIdSet, listJmapMailboxes } from "./access";
@@ -167,7 +167,7 @@ async function emailChangeWindow(ctx: JmapContext, args: Record<string, unknown>
 	if (history.status === "unknown") return null;
 	if (history.status === "current") return { rows: [], since: history.seq, newSeq: history.seq, hasMore: false };
 	const { ids } = await scope(ctx);
-	let rows = await loadChangeRows(ctx, ids, history.since, "email");
+	let rows = await loadChangeRows(ctx, ids, history.since, history.current, "email");
 	let truncated = false;
 	if (exceedsFetchLimit(rows)) {
 		rows = rows.slice(0, -1);
@@ -203,17 +203,24 @@ export const emailQueryChanges: JmapMethodHandler = async (ctx, args) => {
 	const history = await locateHistory(ctx, args.sinceQueryState);
 	if (history.status === "unknown") return CANNOT_CALCULATE;
 	const { ordered, collapse, condition, accessibleIds } = await runEmailQuery(ctx, args);
+	// The result list and the change rows are separate reads. If the log moved
+	// between them the two do not describe the same moment, so rather than hand
+	// out indexes that may already be stale the client is asked to query again.
+	const current = history.status === "current" ? history.seq : history.current;
+	if ((await currentSeq(ctx)) !== current) return CANNOT_CALCULATE;
 	const total = args.calculateTotal ? { total: ordered.length } : {};
 	if (history.status === "current") {
-		return { accountId: ctx.accountId, oldQueryState: formatSeqState(history.seq), newQueryState: formatSeqState(history.seq), removed: [], added: [], ...total };
+		return { accountId: ctx.accountId, oldQueryState: formatSeqState(current), newQueryState: formatSeqState(current), removed: [], added: [], ...total };
 	}
-	const rows = await loadChangeRows(ctx, accessibleIds, history.since, "email");
+	const rows = await loadChangeRows(ctx, accessibleIds, history.since, current, "email");
 	if (exceedsFetchLimit(rows)) return { type: "tooManyChanges" };
 	const changed = new Set(rows.map((row) => row.objectId));
 	if (collapse) {
 		const members = await loadThreadMembers(ctx, condition, Array.from(new Set(rows.map((row) => row.threadKey ?? row.objectId))));
 		for (const ids of members.values()) for (const id of ids) changed.add(id);
 	}
+	// upToId only trims `added`: `removed` stays complete, so the bound is safe
+	// whether or not the sort and filter are immutable (RFC 8620 §5.6).
 	const { removed, added } = diffQueryResults(changed, ordered, typeof args.upToId === "string" ? args.upToId : null);
 	if (maxChanges !== null && removed.length + added.length > maxChanges) return { type: "tooManyChanges" };
 	return {

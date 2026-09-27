@@ -3,7 +3,7 @@ import { JmapError } from "./errors";
 import { mailboxChanges, mailboxGet, mailboxQuery, mailboxSet } from "./mailboxes";
 import { emailChanges, emailGet, emailImport, emailQuery, emailQueryChanges, emailSet, emailUnsupported, searchSnippetGet, threadChanges, threadGet } from "./emails";
 import { emailSubmissionChanges, emailSubmissionGet, emailSubmissionQuery, emailSubmissionSet, identityChanges, identityGet, identitySet } from "./identities";
-import { getMailboxState } from "./state";
+import { digestIds } from "./changes-utils";
 import type { JmapContext, JmapInvocation, JmapMethodHandler, JmapRequest, JmapResponse } from "./types";
 
 const METHODS: Record<string, JmapMethodHandler> = {
@@ -122,9 +122,13 @@ export async function processRequest(ctx: JmapContext, request: JmapRequest): Pr
 	return { methodResponses: responses, createdIds: Object.keys(ctx.createdIds).length ? ctx.createdIds : undefined, sessionState: await sessionState(ctx) };
 }
 
-/** The mailbox state already carries the log sequence and the accessible-mailbox digest. */
+/**
+ * RFC 8620 §2: a changed sessionState tells the client to fetch the Session
+ * object again, so it must only move when that object would differ. Here
+ * the object depends on nothing but the account, never on mail state.
+ */
 export async function sessionState(ctx: JmapContext): Promise<string> {
-	return getMailboxState(ctx);
+	return digestIds([ctx.auth.userId, ctx.auth.email]);
 }
 
 export function validateRequest(body: unknown): JmapRequest {

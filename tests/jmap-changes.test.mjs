@@ -31,7 +31,8 @@ await build({
 			export { users, domains, mailboxes, folders, messages, jmapChangeLog } from "./src/db/schema/index.ts";
 			export { processRequest, validateRequest } from "./src/lib/jmap/processor.ts";
 			export { getEmailState, getMailboxState } from "./src/lib/jmap/state.ts";
-			export { pruneChangeLog, resetPruneTimer } from "./src/lib/jmap/changes.ts";
+			export { pruneChangeLog, resetPruneTimer, loadChangeRows } from "./src/lib/jmap/changes.ts";
+			export { sessionState } from "./src/lib/jmap/processor.ts";
 			export { classifyChanges, takeChangeWindow, diffQueryResults, parseSeqState } from "./src/lib/jmap/changes-utils.ts";
 			export { encodeMailboxRef } from "./src/lib/jmap/ids.ts";
 			export { eq, sql } from "drizzle-orm";
@@ -133,6 +134,22 @@ test("a delivered message is reported as created, then updated, then destroyed",
 	// Created and destroyed inside one window cancels out.
 	const whole = await call("Email/changes", { sinceState: before });
 	assert.deepEqual([whole.created, whole.updated, whole.destroyed], [[], [], []]);
+});
+
+test("the session state depends on the account only, never on mail", async () => {
+	const before = await m.sessionState(ctx);
+	await insertMessage();
+	assert.equal(await m.sessionState(ctx), before);
+	assert.notEqual(await m.getMailboxState(ctx), before);
+});
+
+test("change rows are read only up to the sequence reported as the new state", async () => {
+	const since = Number(await m.getEmailState(ctx));
+	const first = await insertMessage();
+	const upper = Number(await m.getEmailState(ctx));
+	await insertMessage();
+	const rows = await m.loadChangeRows(ctx, [MAILBOX], since, upper, "email");
+	assert.deepEqual(rows.map((row) => row.objectId), [first]);
 });
 
 test("writes that do not change the JMAP Email object do not move the state", async () => {

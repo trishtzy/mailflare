@@ -200,7 +200,7 @@ export const mailboxChanges: JmapMethodHandler = async (ctx, args) => {
 		return { accountId: ctx.accountId, oldState, newState: oldState, hasMoreChanges: false, updatedProperties: COUNT_PROPERTIES, created: [], updated: [], destroyed: [] };
 	}
 	const maxChanges = parseMaxChanges(args.maxChanges);
-	let rows = await loadChangeRows(ctx, ids, history.since, null);
+	let rows = await loadChangeRows(ctx, ids, history.since, history.current, null);
 	let truncated = false;
 	if (exceedsFetchLimit(rows)) {
 		rows = rows.slice(0, -1);
@@ -209,7 +209,9 @@ export const mailboxChanges: JmapMethodHandler = async (ctx, args) => {
 	// Message rows count once per Mailflare mailbox, since that is what they expand to.
 	const window = takeChangeWindow(rows, (row) => (row.type === "mailbox" ? `f:${row.objectId}` : `m:${row.mailboxId}`), maxChanges, truncated ? rows[rows.length - 1].seq : history.current);
 
-	const folderRows = window.rows.filter((row) => row.type === "mailbox");
+	// Rows are scoped by owner as well as mailbox, so a folder in a mailbox this key cannot see is dropped here.
+	const visible = window.rows.filter((row) => row.mailboxId && ids.includes(row.mailboxId));
+	const folderRows = visible.filter((row) => row.type === "mailbox");
 	const folderChanges = classifyChanges(folderRows);
 	const folderMailbox = new Map(folderRows.map((row) => [row.objectId, row.mailboxId]));
 	const folderRef = (folderId: string) => encodeMailboxRef({ kind: "folder", mailboxId: folderMailbox.get(folderId) ?? "", folderId });
@@ -218,7 +220,7 @@ export const mailboxChanges: JmapMethodHandler = async (ctx, args) => {
 	const updated = new Set(folderChanges.updated.map(folderRef));
 	const countsOnly = folderChanges.updated.length === 0;
 
-	const touched = new Set(window.rows.filter((row) => row.type === "email" && row.mailboxId && ids.includes(row.mailboxId)).map((row) => row.mailboxId as string));
+	const touched = new Set(visible.filter((row) => row.type === "email").map((row) => row.mailboxId as string));
 	const foldersByMailbox = await listFoldersByMailbox(ctx, Array.from(touched));
 	const settled = new Set([...created, ...destroyed]);
 	for (const mailboxId of touched) {
