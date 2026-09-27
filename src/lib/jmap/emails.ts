@@ -13,6 +13,8 @@ import { decodeBlobId, decodeMailboxRef, roleToStatus } from "./ids";
 import { buildEmailObject, loadAttachmentsByMessage, resolveHeaderProperty } from "./email-objects";
 import { importFlags, parseReceivedAt, resolveDraftsMailbox } from "./email-import-utils";
 import { filterToSql, mailboxRefCondition, sortToSql } from "./email-query";
+import { exceedsFetchLimit, loadChangeRows, loadThreadMembers, locateHistory } from "./changes";
+import { classifyChanges, classifyThreadChanges, diffQueryResults, formatSeqState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
 import { getEmailState } from "./state";
 import { listAccessibleMailboxIdSet, listJmapMailboxes } from "./access";
 import { deleteUpload, readUpload, storeRawDraftMime } from "./blobs";
@@ -106,17 +108,18 @@ export const emailGet: JmapMethodHandler = async (ctx, args) => {
 	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: ids.filter((id) => !found.has(id)) };
 };
 
-export const emailQuery: JmapMethodHandler = async (ctx, args) => {
+/**
+ * The ordered id list a query describes. Anchors and positions are resolved by
+ * materialising it up to a bound; mailboxes here are small enough that this
+ * stays cheap. `Email/query` and `Email/queryChanges` share it so both see
+ * the same order.
+ */
+async function runEmailQuery(ctx: JmapContext, args: Record<string, unknown>) {
 	const { ids: accessibleIds, condition } = await scope(ctx);
 	const filter = filterToSql(args.filter as Filter | null | undefined, new Set(accessibleIds));
 	const where = filter ? and(condition, filter) : condition;
 	const order = sortToSql(args.sort as Comparator[] | null | undefined);
 	const collapse = !!args.collapseThreads;
-	const limit = Math.min(Math.max(Number(args.limit ?? LIMITS.maxQueryLimit), 0), LIMITS.maxQueryLimit);
-	let position = Number(args.position ?? 0);
-
-	// Anchors are resolved by materialising the ordered id list up to a bound;
-	// mailboxes here are small enough that this stays cheap.
 	const threadKey = sql<string>`coalesce(${messages.threadId}, ${messages.id})`;
 	const allRows = await ctx.db
 		.select({ id: messages.id, thread: threadKey })
@@ -129,6 +132,13 @@ export const emailQuery: JmapMethodHandler = async (ctx, args) => {
 		const seen = new Set<string>();
 		ordered = allRows.filter((row) => (seen.has(row.thread) ? false : (seen.add(row.thread), true))).map((row) => row.id);
 	}
+	return { ordered, collapse, condition, accessibleIds };
+}
+
+export const emailQuery: JmapMethodHandler = async (ctx, args) => {
+	const { ordered } = await runEmailQuery(ctx, args);
+	const limit = Math.min(Math.max(Number(args.limit ?? LIMITS.maxQueryLimit), 0), LIMITS.maxQueryLimit);
+	let position = Number(args.position ?? 0);
 	if (args.anchor) {
 		const index = ordered.indexOf(String(args.anchor));
 		if (index < 0) return { type: "anchorNotFound" };
@@ -140,19 +150,80 @@ export const emailQuery: JmapMethodHandler = async (ctx, args) => {
 	return {
 		accountId: ctx.accountId,
 		queryState: await getEmailState(ctx),
-		canCalculateChanges: false,
+		canCalculateChanges: true,
 		position,
 		ids: page,
 		...(args.calculateTotal ? { total: ordered.length } : {}),
 	};
 };
 
-export const emailChanges: JmapMethodHandler = async () => {
-	return { type: "cannotCalculateChanges", description: "Email change history is not kept; run Email/query again." };
+/**
+ * The email log rows since a state, cut to `maxChanges` distinct keys, or
+ * null when the state is not one the log can answer from (RFC 8620 §5.2).
+ */
+async function emailChangeWindow(ctx: JmapContext, args: Record<string, unknown>, keyOf: (row: { objectId: string; threadKey: string | null }) => string) {
+	const maxChanges = parseMaxChanges(args.maxChanges);
+	const history = await locateHistory(ctx, args.sinceState);
+	if (history.status === "unknown") return null;
+	if (history.status === "current") return { rows: [], since: history.seq, newSeq: history.seq, hasMore: false };
+	const { ids } = await scope(ctx);
+	let rows = await loadChangeRows(ctx, ids, history.since, "email");
+	let truncated = false;
+	if (exceedsFetchLimit(rows)) {
+		rows = rows.slice(0, -1);
+		truncated = true;
+	}
+	const window = takeChangeWindow(rows, keyOf, maxChanges, truncated ? rows[rows.length - 1].seq : history.current);
+	return { ...window, since: history.since, hasMore: window.hasMore || truncated };
+}
+
+const CANNOT_CALCULATE = { type: "cannotCalculateChanges", description: "That state is older than the retained change history; run Email/query again." };
+
+export const emailChanges: JmapMethodHandler = async (ctx, args) => {
+	const window = await emailChangeWindow(ctx, args, (row) => row.objectId);
+	if (!window) return CANNOT_CALCULATE;
+	return {
+		accountId: ctx.accountId,
+		oldState: formatSeqState(window.since),
+		newState: formatSeqState(window.newSeq),
+		hasMoreChanges: window.hasMore,
+		...classifyChanges(window.rows),
+	};
 };
 
-export const emailQueryChanges: JmapMethodHandler = async () => {
-	return { type: "cannotCalculateChanges" };
+/**
+ * Email/queryChanges (RFC 8620 §5.6): every id that changed is reported as
+ * removed and, when it still matches, added back at its current index. With
+ * collapseThreads a new message can displace its thread's previous
+ * representative without that message changing, so changes widen to whole
+ * threads first.
+ */
+export const emailQueryChanges: JmapMethodHandler = async (ctx, args) => {
+	const maxChanges = parseMaxChanges(args.maxChanges);
+	const history = await locateHistory(ctx, args.sinceQueryState);
+	if (history.status === "unknown") return CANNOT_CALCULATE;
+	const { ordered, collapse, condition, accessibleIds } = await runEmailQuery(ctx, args);
+	const total = args.calculateTotal ? { total: ordered.length } : {};
+	if (history.status === "current") {
+		return { accountId: ctx.accountId, oldQueryState: formatSeqState(history.seq), newQueryState: formatSeqState(history.seq), removed: [], added: [], ...total };
+	}
+	const rows = await loadChangeRows(ctx, accessibleIds, history.since, "email");
+	if (exceedsFetchLimit(rows)) return { type: "tooManyChanges" };
+	const changed = new Set(rows.map((row) => row.objectId));
+	if (collapse) {
+		const members = await loadThreadMembers(ctx, condition, Array.from(new Set(rows.map((row) => row.threadKey ?? row.objectId))));
+		for (const ids of members.values()) for (const id of ids) changed.add(id);
+	}
+	const { removed, added } = diffQueryResults(changed, ordered, typeof args.upToId === "string" ? args.upToId : null);
+	if (maxChanges !== null && removed.length + added.length > maxChanges) return { type: "tooManyChanges" };
+	return {
+		accountId: ctx.accountId,
+		oldQueryState: formatSeqState(history.since),
+		newQueryState: formatSeqState(history.current),
+		removed,
+		added,
+		...total,
+	};
 };
 
 /** Where a patched `mailboxIds` puts the message: exactly one JMAP mailbox is supported. */
@@ -464,7 +535,20 @@ export const threadGet: JmapMethodHandler = async (ctx, args) => {
 	};
 };
 
-export const threadChanges: JmapMethodHandler = async () => ({ type: "cannotCalculateChanges" });
+export const threadChanges: JmapMethodHandler = async (ctx, args) => {
+	const window = await emailChangeWindow(ctx, args, (row) => row.threadKey ?? row.objectId);
+	if (!window) return CANNOT_CALCULATE;
+	const { condition } = await scope(ctx);
+	const keys = Array.from(new Set(window.rows.map((row) => row.threadKey ?? row.objectId)));
+	const members = await loadThreadMembers(ctx, condition, keys);
+	return {
+		accountId: ctx.accountId,
+		oldState: formatSeqState(window.since),
+		newState: formatSeqState(window.newSeq),
+		hasMoreChanges: window.hasMore,
+		...classifyThreadChanges(window.rows, members),
+	};
+};
 
 /** SearchSnippet/get: the subject and a body excerpt around the first match, with <mark> tags. */
 export const searchSnippetGet: JmapMethodHandler = async (ctx, args) => {

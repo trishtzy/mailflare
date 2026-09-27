@@ -3,6 +3,7 @@ import { authenticateApiRequest, hasScope } from "@/lib/api/key-auth";
 import { LIMITS } from "./constants";
 import { corsHeaders, JmapError, problemResponse } from "./errors";
 import { readBlob, storeUpload } from "./blobs";
+import { pruneChangeLog } from "./changes";
 import { processRequest, sessionState, validateRequest } from "./processor";
 import { buildSession } from "./session";
 import { getEmailState, getMailboxState } from "./state";
@@ -35,6 +36,8 @@ export async function handleJmapRequest(request: Request, env: CloudflareEnv): P
 		return new Response(JSON.stringify({ error: "This API key does not have the jmap scope" }), { status: 403, headers: JSON_HEADERS });
 	}
 	const ctx: JmapContext = { env, db: getDb(env), auth, accountId: auth.userId, origin: env.APP_URL?.trim() || url.origin, createdIds: {} };
+	// Old change-log history is dropped from the front at most once an hour; a failure here must not fail the request.
+	await pruneChangeLog(ctx).catch((error) => console.warn("JMAP change log prune failed", error));
 
 	if (path === "/jmap/session" && request.method === "GET") {
 		return new Response(JSON.stringify(buildSession(ctx, await sessionState(ctx))), { headers: JSON_HEADERS });

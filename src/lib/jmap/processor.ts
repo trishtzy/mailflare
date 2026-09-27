@@ -3,7 +3,7 @@ import { JmapError } from "./errors";
 import { mailboxChanges, mailboxGet, mailboxQuery, mailboxSet } from "./mailboxes";
 import { emailChanges, emailGet, emailImport, emailQuery, emailQueryChanges, emailSet, emailUnsupported, searchSnippetGet, threadChanges, threadGet } from "./emails";
 import { emailSubmissionChanges, emailSubmissionGet, emailSubmissionQuery, emailSubmissionSet, identityChanges, identityGet, identitySet } from "./identities";
-import { getEmailState, getMailboxState } from "./state";
+import { getMailboxState } from "./state";
 import type { JmapContext, JmapInvocation, JmapMethodHandler, JmapRequest, JmapResponse } from "./types";
 
 const METHODS: Record<string, JmapMethodHandler> = {
@@ -122,8 +122,9 @@ export async function processRequest(ctx: JmapContext, request: JmapRequest): Pr
 	return { methodResponses: responses, createdIds: Object.keys(ctx.createdIds).length ? ctx.createdIds : undefined, sessionState: await sessionState(ctx) };
 }
 
+/** The mailbox state already carries the log sequence and the accessible-mailbox digest. */
 export async function sessionState(ctx: JmapContext): Promise<string> {
-	return `${await getMailboxState(ctx)}:${(await getEmailState(ctx)).split(".")[0]}`;
+	return getMailboxState(ctx);
 }
 
 export function validateRequest(body: unknown): JmapRequest {

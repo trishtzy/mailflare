@@ -20,9 +20,11 @@ export function getBackupConfigurationStatus(_env?: CloudflareEnv) {
 const INTERNAL_TABLE_PATTERNS = ["sqlite_%", "_cf%", "messages_fts%"];
 /**
  * The search index is derived data: its triggers repopulate it as messages are
- * restored, so it is neither exported nor part of the coverage check.
+ * restored, so it is neither exported nor part of the coverage check. The JMAP
+ * change log is likewise not backed up: a restore invalidates every client's
+ * sync state anyway, so it is cleared afterwards and clients resync.
  */
-const INTERNAL_TABLES = ["d1_migrations"];
+const INTERNAL_TABLES = ["d1_migrations", "jmap_change_log"];
 
 /**
  * Fails the backup when the database contains a table BACKUP_TABLES does not
@@ -69,6 +71,10 @@ export async function restoreDatabaseRecords(db: D1Database, content: ArrayBuffe
 			if (statements.length > 0) await db.batch(statements);
 		}
 	}
+	// The restore fired the change-log triggers for every deleted and re-inserted
+	// row. None of that history is meaningful to a client, so drop it: any client
+	// holding an older state gets cannotCalculateChanges and resyncs from scratch.
+	await db.prepare("DELETE FROM jmap_change_log").run();
 }
 
 function parseDatabaseBackup(content: ArrayBuffer): DatabaseBackupDocument {
