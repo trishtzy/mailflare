@@ -32,6 +32,7 @@ await build({
 			export { processRequest, validateRequest } from "./src/lib/jmap/processor.ts";
 			export { getEmailState, getMailboxState } from "./src/lib/jmap/state.ts";
 			export { memoize, forgetMemo } from "./src/lib/jmap/context-utils.ts";
+			export { listAccessibleMailboxIdSet } from "./src/lib/jmap/access.ts";
 			export { pruneChangeLog, resetPruneTimer, loadChangeRows } from "./src/lib/jmap/changes.ts";
 			export { sessionState } from "./src/lib/jmap/processor.ts";
 			export { classifyChanges, takeChangeWindow, diffQueryResults, parseSeqState } from "./src/lib/jmap/changes-utils.ts";
@@ -335,7 +336,7 @@ test("state reads are memoized for the request and refreshed by a write in it", 
 	assert.equal(second.state, await m.getEmailState(newContext()));
 });
 
-test("a read-only bundle reads the change-log sequence once", async () => {
+test("a read-only bundle reads the change-log sequence and the accessible mailboxes once", async () => {
 	const id = await insertMessage();
 	const statements = await recordStatements(async () => {
 		const results = await callAll([
@@ -350,6 +351,29 @@ test("a read-only bundle reads the change-log sequence once", async () => {
 	});
 	const sequenceReads = statements.filter((sql) => /max\("?seq"?\) from "?jmap_change_log"?/i.test(sql));
 	assert.equal(sequenceReads.length, 1, `expected one sequence read, got:\n${sequenceReads.join("\n")}`);
+	// The access lookup is the owned-mailboxes join plus the license check; both run once for the request.
+	const mailboxReads = statements.filter((sql) => /from "?mailboxes"? inner join "?domains"?/i.test(sql));
+	const licenseReads = statements.filter((sql) => /from "?license_settings"?/i.test(sql));
+	assert.equal(mailboxReads.length, 1, `expected one accessible-mailboxes read, got ${mailboxReads.length}`);
+	assert.equal(licenseReads.length, 1, `expected one license read, got ${licenseReads.length}`);
+});
+
+test("a shared context still sees a mailbox added between requests", async () => {
+	const context = newContext();
+	const before = await m.listAccessibleMailboxIdSet(context);
+	assert.deepEqual([...before], [MAILBOX]);
+	await db.insert(m.mailboxes).values({ id: "mbx_second", userId: USER.id, domainId: "dom_test", localPart: "second" });
+	try {
+		assert.deepEqual([...(await m.listAccessibleMailboxIdSet(context))], [MAILBOX]);
+		assert.deepEqual([...(await m.listAccessibleMailboxIdSet(newContext()))].sort(), [MAILBOX, "mbx_second"].sort());
+		// A write in the request forgets the memo along with the state, so its newState also sees the new mailbox.
+		const [set] = await callAll([["Mailbox/set", { create: { f: { parentId: m.encodeMailboxRef({ kind: "account", mailboxId: "mbx_second" }), name: "Later" } } }]]);
+		assert.equal(set.name, "Mailbox/set");
+		assert.ok(set.created.f, "the folder was created under the new mailbox");
+		await db.delete(m.folders).where(m.eq(m.folders.mailboxId, "mbx_second"));
+	} finally {
+		await db.delete(m.mailboxes).where(m.eq(m.mailboxes.id, "mbx_second"));
+	}
 });
 
 test("event-source ticks and reused contexts see writes once the memo is forgotten", async () => {
