@@ -4,6 +4,7 @@ import { mailboxChanges, mailboxGet, mailboxQuery, mailboxSet } from "./mailboxe
 import { emailChanges, emailGet, emailImport, emailQuery, emailQueryChanges, emailSet, emailUnsupported, searchSnippetGet, threadChanges, threadGet } from "./emails";
 import { emailSubmissionChanges, emailSubmissionGet, emailSubmissionQuery, emailSubmissionSet, identityChanges, identityGet, identitySet } from "./identities";
 import { digestIds } from "./changes-utils";
+import { forgetMemo } from "./context-utils";
 import type { JmapContext, JmapInvocation, JmapMethodHandler, JmapRequest, JmapResponse } from "./types";
 
 const METHODS: Record<string, JmapMethodHandler> = {
@@ -110,6 +111,8 @@ export async function processRequest(ctx: JmapContext, request: JmapRequest): Pr
 				responses.push(["Email/set", { accountId: ctx.accountId, oldState: clean.oldState, newState: clean.newState, updated: {}, destroyed: __destroyedEmails, created: {} }, callId]);
 			}
 		} catch (error) {
+			// A handler that failed after writing never refreshed the memoized state; do not let later calls reuse it.
+			forgetMemo(ctx);
 			if (error instanceof JmapError) {
 				responses.push(["error", error.toMethodError(), callId]);
 			} else {

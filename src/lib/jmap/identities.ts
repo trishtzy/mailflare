@@ -5,7 +5,7 @@ import { loadMessageAttachmentContents } from "@/lib/email/attachments";
 import { deleteMessageWithObjects } from "@/lib/email/message-cleanup";
 import { decodeIdentityId, identityId } from "./ids";
 import { listJmapMailboxes, listSendableAddresses } from "./access";
-import { getEmailState } from "./state";
+import { getEmailState, refreshEmailState } from "./state";
 import { JmapError } from "./errors";
 import type { JmapContext, JmapMethodHandler } from "./types";
 
@@ -121,7 +121,7 @@ export const emailSubmissionSet: JmapMethodHandler = async (ctx, args) => {
 	return {
 		accountId: ctx.accountId,
 		oldState,
-		newState: await getEmailState(ctx),
+		newState: await refreshEmailState(ctx),
 		created,
 		updated: {},
 		destroyed: [],

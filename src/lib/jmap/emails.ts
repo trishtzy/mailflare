@@ -15,7 +15,7 @@ import { importFlags, parseReceivedAt, resolveDraftsMailbox } from "./email-impo
 import { filterToSql, mailboxRefCondition, sortToSql } from "./email-query";
 import { currentSeq, exceedsFetchLimit, loadChangeRows, loadThreadMembers, locateHistory } from "./changes";
 import { classifyChanges, classifyThreadChanges, diffQueryResults, formatSeqState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
-import { getEmailState } from "./state";
+import { getEmailState, refreshEmailState } from "./state";
 import { listAccessibleMailboxIdSet, listJmapMailboxes } from "./access";
 import { deleteUpload, readUpload, storeRawDraftMime } from "./blobs";
 import type { Comparator, EmailAddressObject, Filter, JmapContext, JmapMethodHandler, JmapSetError, MailboxRef } from "./types";
@@ -403,7 +403,7 @@ export const emailSet: JmapMethodHandler = async (ctx, args) => {
 		destroyed.push(id);
 	}
 
-	return { accountId: ctx.accountId, oldState, newState: await getEmailState(ctx), created, updated, destroyed, notCreated, notUpdated, notDestroyed };
+	return { accountId: ctx.accountId, oldState, newState: await refreshEmailState(ctx), created, updated, destroyed, notCreated, notUpdated, notDestroyed };
 };
 
 /**
@@ -516,7 +516,7 @@ export const emailImport: JmapMethodHandler = async (ctx, args) => {
 		created[creationId] = { id: object.id, blobId: object.blobId, threadId: object.threadId, size: object.size };
 	}
 
-	return { accountId: ctx.accountId, oldState, newState: await getEmailState(ctx), created, notCreated };
+	return { accountId: ctx.accountId, oldState, newState: await refreshEmailState(ctx), created, notCreated };
 };
 
 export const emailUnsupported = (method: string): JmapMethodHandler => async () => ({ type: "unknownMethod", description: `${method} is not supported` });
