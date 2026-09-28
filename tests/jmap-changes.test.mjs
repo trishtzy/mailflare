@@ -31,6 +31,7 @@ await build({
 			export { users, domains, mailboxes, folders, messages, jmapChangeLog } from "./src/db/schema/index.ts";
 			export { processRequest, validateRequest } from "./src/lib/jmap/processor.ts";
 			export { getEmailState, getMailboxState } from "./src/lib/jmap/state.ts";
+			export { memoize, forgetMemo } from "./src/lib/jmap/context-utils.ts";
 			export { pruneChangeLog, resetPruneTimer, loadChangeRows } from "./src/lib/jmap/changes.ts";
 			export { sessionState } from "./src/lib/jmap/processor.ts";
 			export { classifyChanges, takeChangeWindow, diffQueryResults, parseSeqState } from "./src/lib/jmap/changes-utils.ts";
@@ -58,8 +59,19 @@ const INBOX = m.encodeMailboxRef({ kind: "role", mailboxId: MAILBOX, role: "inbo
 
 let database;
 let db;
-let ctx;
 let messageCounter = 0;
+
+/** One context per request, as the handler builds it; state memoized on it must not outlive the call. */
+function newContext() {
+	return {
+		env: { DB: database },
+		db,
+		auth: { userId: USER.id, email: USER.email, scopes: ["jmap"], user: USER },
+		accountId: USER.id,
+		origin: "http://localhost",
+		createdIds: {},
+	};
+}
 
 before(async () => {
 	database = new m.SqliteDatabase(":memory:");
@@ -68,20 +80,36 @@ before(async () => {
 	await db.insert(m.users).values({ id: USER.id, email: USER.email, passwordHash: "x", name: "Test" });
 	await db.insert(m.domains).values({ id: "dom_test", userId: USER.id, hostname: "example.test", zoneId: "zone", status: "active" });
 	await db.insert(m.mailboxes).values({ id: MAILBOX, userId: USER.id, domainId: "dom_test", localPart: "me" });
-	ctx = {
-		env: { DB: database },
-		db,
-		auth: { userId: USER.id, email: USER.email, scopes: ["jmap"], user: USER },
-		accountId: USER.id,
-		origin: "http://localhost",
-		createdIds: {},
-	};
 });
 
+const USING = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"];
+
+/** One request holding every call, in order; each result is spread with the response name. */
+async function callAll(calls) {
+	const methodCalls = calls.map(([name, args], index) => [name, { accountId: USER.id, ...args }, `c${index + 1}`]);
+	const response = await m.processRequest(newContext(), m.validateRequest({ using: USING, methodCalls }));
+	return response.methodResponses.map(([responseName, result]) => ({ name: responseName, ...result }));
+}
+
 async function call(name, args) {
-	const response = await m.processRequest(ctx, m.validateRequest({ using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"], methodCalls: [[name, { accountId: USER.id, ...args }, "c1"]] }));
-	const [responseName, result] = response.methodResponses[0];
-	return { name: responseName, ...result };
+	const [result] = await callAll([[name, args]]);
+	return result;
+}
+
+/** SQL of every statement the database prepares while `run` executes. */
+async function recordStatements(run) {
+	const prepared = [];
+	const original = database.prepare;
+	database.prepare = (sql) => {
+		prepared.push(sql);
+		return original.call(database, sql);
+	};
+	try {
+		await run();
+	} finally {
+		database.prepare = original;
+	}
+	return prepared;
 }
 
 async function insertMessage(overrides = {}) {
@@ -103,7 +131,7 @@ async function insertMessage(overrides = {}) {
 }
 
 test("states start at zero and a client at the current state gets an empty change set", async () => {
-	assert.equal(await m.getEmailState(ctx), "0");
+	assert.equal(await m.getEmailState(newContext()), "0");
 	const changes = await call("Email/changes", { sinceState: "0" });
 	assert.equal(changes.name, "Email/changes");
 	assert.deepEqual([changes.created, changes.updated, changes.destroyed, changes.hasMoreChanges], [[], [], [], false]);
@@ -111,7 +139,7 @@ test("states start at zero and a client at the current state gets an empty chang
 });
 
 test("a delivered message is reported as created, then updated, then destroyed", async () => {
-	const before = await m.getEmailState(ctx);
+	const before = await m.getEmailState(newContext());
 	const id = await insertMessage();
 	const created = await call("Email/changes", { sinceState: before });
 	assert.deepEqual(created.created, [id]);
@@ -137,34 +165,34 @@ test("a delivered message is reported as created, then updated, then destroyed",
 });
 
 test("the session state depends on the account only, never on mail", async () => {
-	const before = await m.sessionState(ctx);
+	const before = await m.sessionState(newContext());
 	await insertMessage();
-	assert.equal(await m.sessionState(ctx), before);
-	assert.notEqual(await m.getMailboxState(ctx), before);
+	assert.equal(await m.sessionState(newContext()), before);
+	assert.notEqual(await m.getMailboxState(newContext()), before);
 });
 
 test("change rows are read only up to the sequence reported as the new state", async () => {
-	const since = Number(await m.getEmailState(ctx));
+	const since = Number(await m.getEmailState(newContext()));
 	const first = await insertMessage();
-	const upper = Number(await m.getEmailState(ctx));
+	const upper = Number(await m.getEmailState(newContext()));
 	await insertMessage();
-	const rows = await m.loadChangeRows(ctx, [MAILBOX], since, upper, "email");
+	const rows = await m.loadChangeRows(newContext(), [MAILBOX], since, upper, "email");
 	assert.deepEqual(rows.map((row) => row.objectId), [first]);
 });
 
 test("writes that do not change the JMAP Email object do not move the state", async () => {
 	const id = await insertMessage({ read: true });
-	const state = await m.getEmailState(ctx);
+	const state = await m.getEmailState(newContext());
 	await db.update(m.messages).set({ spamScore: 3, spamVerdict: "inbox", spamAnalyzedAt: new Date() }).where(m.eq(m.messages.id, id));
 	await db.update(m.messages).set({ read: true }).where(m.eq(m.messages.id, id));
-	assert.equal(await m.getEmailState(ctx), state);
+	assert.equal(await m.getEmailState(newContext()), state);
 });
 
 test("unknown, outdated and future states answer cannotCalculateChanges", async () => {
 	const legacy = await call("Email/changes", { sinceState: "12.345.6.7.8.0" });
 	assert.equal(legacy.name, "error");
 	assert.equal(legacy.type, "cannotCalculateChanges");
-	const future = await call("Email/changes", { sinceState: String(Number(await m.getEmailState(ctx)) + 50) });
+	const future = await call("Email/changes", { sinceState: String(Number(await m.getEmailState(newContext())) + 50) });
 	assert.equal(future.type, "cannotCalculateChanges");
 	const thread = await call("Thread/changes", { sinceState: "nonsense" });
 	assert.equal(thread.type, "cannotCalculateChanges");
@@ -173,7 +201,7 @@ test("unknown, outdated and future states answer cannotCalculateChanges", async 
 });
 
 test("maxChanges cuts on a sequence boundary and hasMoreChanges resumes from newState", async () => {
-	const before = await m.getEmailState(ctx);
+	const before = await m.getEmailState(newContext());
 	const ids = [await insertMessage(), await insertMessage(), await insertMessage()];
 	const first = await call("Email/changes", { sinceState: before, maxChanges: 2 });
 	assert.deepEqual(first.created, ids.slice(0, 2));
@@ -181,13 +209,13 @@ test("maxChanges cuts on a sequence boundary and hasMoreChanges resumes from new
 	const second = await call("Email/changes", { sinceState: first.newState, maxChanges: 2 });
 	assert.deepEqual(second.created, [ids[2]]);
 	assert.equal(second.hasMoreChanges, false);
-	assert.equal(second.newState, await m.getEmailState(ctx));
+	assert.equal(second.newState, await m.getEmailState(newContext()));
 	const invalid = await call("Email/changes", { sinceState: before, maxChanges: 0 });
 	assert.equal(invalid.type, "invalidArguments");
 });
 
 test("Thread/changes follows the messages in a thread", async () => {
-	const before = await m.getEmailState(ctx);
+	const before = await m.getEmailState(newContext());
 	const root = await insertMessage();
 	const created = await call("Thread/changes", { sinceState: before });
 	assert.deepEqual(created.created, [root]);
@@ -207,7 +235,7 @@ test("Thread/changes follows the messages in a thread", async () => {
 });
 
 test("Mailbox/changes reports count-only updates and folder lifecycle", async () => {
-	const before = await m.getMailboxState(ctx);
+	const before = await m.getMailboxState(newContext());
 	await insertMessage();
 	const counts = await call("Mailbox/changes", { sinceState: before });
 	assert.equal(counts.name, "Mailbox/changes");
@@ -268,14 +296,14 @@ test("Email/queryChanges with collapseThreads re-adds the thread's current repre
 });
 
 test("pruning drops old history from the front and keeps the newest row", async () => {
-	const before = await m.getEmailState(ctx);
+	const before = await m.getEmailState(newContext());
 	await insertMessage();
-	const middle = await m.getEmailState(ctx);
+	const middle = await m.getEmailState(newContext());
 	await insertMessage();
 	const fortyDaysAgo = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
 	await db.run(m.sql`update jmap_change_log set created_at = ${fortyDaysAgo} where seq <= ${Number(middle)}`);
 	m.resetPruneTimer();
-	await m.pruneChangeLog(ctx);
+	await m.pruneChangeLog(newContext());
 	const [{ oldest }] = await db.all(m.sql`select min(seq) as oldest from jmap_change_log`);
 	assert.equal(oldest, Number(middle) + 1);
 
@@ -288,8 +316,62 @@ test("pruning drops old history from the front and keeps the newest row", async 
 	// Everything old on a quiet server: the newest row survives so the state does not regress.
 	await db.run(m.sql`update jmap_change_log set created_at = ${fortyDaysAgo}`);
 	m.resetPruneTimer();
-	await m.pruneChangeLog(ctx);
-	assert.equal(await m.getEmailState(ctx), fresh.newState);
+	await m.pruneChangeLog(newContext());
+	assert.equal(await m.getEmailState(newContext()), fresh.newState);
+});
+
+test("state reads are memoized for the request and refreshed by a write in it", async () => {
+	const id = await insertMessage({ read: false });
+	const [first, set, second] = await callAll([
+		["Email/get", { ids: [id], properties: ["id"] }],
+		["Email/set", { update: { [id]: { "keywords/$seen": true } } }],
+		["Email/get", { ids: [id], properties: ["id"] }],
+	]);
+	assert.equal(set.name, "Email/set");
+	assert.deepEqual(set.updated, { [id]: null });
+	assert.equal(first.state, set.oldState);
+	assert.notEqual(set.newState, set.oldState);
+	assert.equal(second.state, set.newState);
+	assert.equal(second.state, await m.getEmailState(newContext()));
+});
+
+test("a read-only bundle reads the change-log sequence once", async () => {
+	const id = await insertMessage();
+	const statements = await recordStatements(async () => {
+		const results = await callAll([
+			["Mailbox/get", { ids: null }],
+			["Email/query", { filter: { inMailbox: INBOX } }],
+			["Thread/get", { ids: [id] }],
+			["Email/get", { ids: [id], properties: ["id"] }],
+		]);
+		assert.deepEqual(results.map((result) => result.name), ["Mailbox/get", "Email/query", "Thread/get", "Email/get"]);
+		const states = [results[1].queryState, results[2].state, results[3].state];
+		assert.ok(states.every((state) => state === states[0]), "every method in the request reports the same state");
+	});
+	const sequenceReads = statements.filter((sql) => /max\("?seq"?\) from "?jmap_change_log"?/i.test(sql));
+	assert.equal(sequenceReads.length, 1, `expected one sequence read, got:\n${sequenceReads.join("\n")}`);
+});
+
+test("event-source ticks and reused contexts see writes once the memo is forgotten", async () => {
+	const context = newContext();
+	const before = await m.getEmailState(context);
+	await insertMessage();
+	assert.equal(await m.getEmailState(context), before);
+	m.forgetMemo(context);
+	assert.notEqual(await m.getEmailState(context), before);
+});
+
+test("memoize shares one computation per key and drops a rejected one", async () => {
+	const context = newContext();
+	let calls = 0;
+	const compute = async () => (calls += 1);
+	const [a, b] = await Promise.all([m.memoize(context, "k", compute), m.memoize(context, "k", compute)]);
+	assert.deepEqual([a, b, calls], [1, 1, 1]);
+	assert.equal(await m.memoize(context, "other", compute), 2);
+	await assert.rejects(m.memoize(context, "bad", async () => { throw new Error("boom"); }));
+	assert.equal(await m.memoize(context, "bad", async () => "recovered"), "recovered");
+	m.forgetMemo(context);
+	assert.equal(await m.memoize(context, "k", compute), 3);
 });
 
 test("pure helpers: window cutting and classification", () => {

@@ -5,7 +5,7 @@ import { JmapError } from "./errors";
 import { decodeMailboxRef, encodeMailboxRef, roleToStatus, SYSTEM_ROLES } from "./ids";
 import { exceedsFetchLimit, loadChangeRows, locateHistory } from "./changes";
 import { classifyChanges, digestIds, formatMailboxState, parseMailboxState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
-import { getMailboxState } from "./state";
+import { getMailboxState, refreshMailboxState } from "./state";
 import type { AccessibleMailbox, JmapContext, JmapMethodHandler, SystemRole } from "./types";
 import { listFoldersByMailbox, listJmapMailboxes } from "./access";
 
@@ -333,7 +333,7 @@ export const mailboxSet: JmapMethodHandler = async (ctx, args) => {
 	return {
 		accountId: ctx.accountId,
 		oldState,
-		newState: await getMailboxState(ctx),
+		newState: await refreshMailboxState(ctx),
 		created,
 		updated,
 		destroyed,

@@ -31,6 +31,8 @@ export type JmapContext = {
 	origin: string;
 	/** Client-assigned creation ids resolved so far in this request. */
 	createdIds: Record<string, JmapId>;
+	/** Per-request memo, see `memoize` in context-utils.ts. Created on first use. */
+	memo?: Map<string, Promise<unknown>>;
 };
 
 export type JmapMethodHandler = (ctx: JmapContext, args: Record<string, unknown>) => Promise<Record<string, unknown> | JmapMethodError>;
