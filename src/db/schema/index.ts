@@ -618,6 +618,31 @@ export const backups = sqliteTable(
 	],
 );
 
+/**
+ * Append-only log of JMAP-visible changes, written by triggers on `messages`
+ * and `folders` (migration 0033) so the `/changes` methods can answer from it.
+ * `seq` is the state clock; rows older than the retention window are pruned
+ * from the front, never from the middle.
+ */
+export const jmapChangeLog = sqliteTable(
+	"jmap_change_log",
+	{
+		seq: integer("seq").primaryKey({ autoIncrement: true }),
+		type: text("type", { enum: ["email", "mailbox"] }).notNull(),
+		objectId: text("object_id").notNull(),
+		userId: text("user_id").notNull(),
+		mailboxId: text("mailbox_id"),
+		threadKey: text("thread_key"),
+		kind: text("kind", { enum: ["created", "updated", "destroyed"] }).notNull(),
+		createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+	},
+	(t) => [
+		index("jmap_change_log_mailbox_seq_idx").on(t.mailboxId, t.seq),
+		index("jmap_change_log_user_seq_idx").on(t.userId, t.seq),
+		index("jmap_change_log_created_idx").on(t.createdAt),
+	],
+);
+
 export const schema = {
 	users,
 	domains,
@@ -645,4 +670,5 @@ export const schema = {
 	backups,
 	appSettings,
 	licenseSettings,
+	jmapChangeLog,
 };
