@@ -2,25 +2,35 @@ import { and, eq, inArray } from "drizzle-orm";
 import { folders, mailboxes } from "@/db/schema";
 import { listAccessibleMailboxes } from "@/lib/mailboxes/access";
 import { getMailboxDomainAddresses } from "@/lib/mailboxes/domain-addresses";
+import { memoize } from "./context-utils";
 import type { AccessibleMailbox, JmapContext } from "./types";
 
-/** Every Mailflare mailbox the key's user can read, in a JMAP-shaped record. */
-export async function listJmapMailboxes(ctx: JmapContext): Promise<AccessibleMailbox[]> {
-	const rows = await listAccessibleMailboxes(ctx.db, ctx.auth.user);
-	return rows.map((row) => ({
-		id: row.id,
-		userId: row.userId,
-		localPart: row.localPart,
-		hostname: row.hostname,
-		displayName: row.displayName,
-		permission: row.permission,
-		type: row.type,
-		isPrimary: row.isPrimary,
-	}));
+/**
+ * Every Mailflare mailbox the key's user can read, in a JMAP-shaped record.
+ * Memoized for the request: the set of accessible mailboxes changes only
+ * through the dashboard (creating, disabling or sharing a mailbox), never
+ * through a JMAP method, so every handler in a request may share one lookup.
+ * The owned-mailboxes query, the license check and (with sharing enabled)
+ * the shared-mailboxes query otherwise ran once per method.
+ */
+export function listJmapMailboxes(ctx: JmapContext): Promise<AccessibleMailbox[]> {
+	return memoize(ctx, "mailboxes", async () => {
+		const rows = await listAccessibleMailboxes(ctx.db, ctx.auth.user);
+		return rows.map((row) => ({
+			id: row.id,
+			userId: row.userId,
+			localPart: row.localPart,
+			hostname: row.hostname,
+			displayName: row.displayName,
+			permission: row.permission,
+			type: row.type,
+			isPrimary: row.isPrimary,
+		}));
+	});
 }
 
-export async function listAccessibleMailboxIdSet(ctx: JmapContext): Promise<Set<string>> {
-	return new Set((await listJmapMailboxes(ctx)).map((row) => row.id));
+export function listAccessibleMailboxIdSet(ctx: JmapContext): Promise<Set<string>> {
+	return memoize(ctx, "mailboxIds", async () => new Set((await listJmapMailboxes(ctx)).map((row) => row.id)));
 }
 
 /** User folders for a set of mailboxes, keyed by mailbox id. */
