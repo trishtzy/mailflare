@@ -1,4 +1,4 @@
-import { APP, expect, sleep, waitFor } from "./harness.mjs";
+import { APP, expect, fail, sleep, waitFor } from "./harness.mjs";
 
 const chrome = (n) => n.pkg === "com.android.chrome";
 const launcher = (n) => /launcher/.test(n.pkg);
@@ -83,7 +83,11 @@ const journey = {
 					await sleep(800);
 					icon = await device.findNative(homeIcon, { timeout: 5_000, message: "the Mailflare icon" }).catch(() => null);
 				}
-				expect(icon, 'no "Mailflare" icon on the home screen or in the app drawer');
+				if (!icon) {
+					const pinned = (await device.shell("dumpsys shortcut 2>/dev/null | grep -A3 'Package: com.android.chrome' | grep -iE 'pinned|shortLabel|Mailflare' | head -5")).replace(/\s+/g, " ").trim();
+					const labels = (await device.nativeNodes()).filter((n) => launcher(n) && (n.text || n.desc)).map((n) => n.text || n.desc);
+					fail(`no "Mailflare" icon on the home screen or in the app drawer (Chrome shortcuts: ${pinned || "none"}; launcher shows: ${labels.slice(0, 30).join(", ")})`);
+				}
 				// The label sits under the image; the image is the top part of the icon's box.
 				const imageBottom = icon.bounds.y1 + (icon.bounds.x2 - icon.bounds.x1) * 0.9;
 				const { r, g, b } = await device.meanColour({ ...icon.bounds, y2: Math.round(imageBottom) });
