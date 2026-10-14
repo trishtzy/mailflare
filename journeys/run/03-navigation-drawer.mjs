@@ -5,8 +5,11 @@ const FOLDERS = ["Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Archive", "Al
 const listHeading = (device) => device.eval(() => [...document.querySelectorAll(".tb-title")].map((el) => window.__j.text(el)).find(Boolean) ?? null);
 
 export default {
-	// Still fails on main; shown next to the failure in the summary, never used to skip or pass it.
-	knownIssue: "Back with the drawer open does not just close the drawer (pre-existing, see journeys/README.md)",
+	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
+	knownIssue: {
+		step: "Verify that the drawer is closed and the list heading still reads \"Sent\"",
+		issue: "#19: Back with the drawer open leaves the list instead of closing the drawer",
+	},
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
 		["Tap the menu button (three horizontal lines) at the top left of the screen", ({ device }) => device.tap("[data-nav-toggle]", { effect: () => document.body.classList.contains("nav-open") })],

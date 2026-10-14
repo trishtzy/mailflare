@@ -198,22 +198,15 @@ export class Device {
 	}
 
 	/**
-	 * Taps the Airplane mode tile in the open Quick Settings panel. Turning it on also drops the adb
-	 * reverse tunnel first (Airplane mode does not cut it); turning it off restores the tunnel.
+	 * Turns Airplane mode on or off while Quick Settings is open. This stands in for tapping the tile,
+	 * whose place differs between images (the CI image opens the shade with one row of tiles), with the
+	 * same system setting: `cmd connectivity airplane-mode`. Turning it on also drops the adb reverse
+	 * tunnel first (Airplane mode does not cut it); turning it off restores the tunnel.
 	 */
-	async tapAirplaneTile(on) {
+	async setAirplaneMode(on) {
 		if (on) await this.adb("reverse", "--remove", "tcp:3000").catch(() => {});
-		for (let attempt = 1; ; attempt++) {
-			// The tile does not move within a run, so only the first toggle pays for a uiautomator dump.
-			if (!this.airplaneTile || attempt > 1) {
-				const isTile = (n) => n.clickable && /^Airplane mode/.test(n.desc || n.text);
-				const node = await this.findNative(isTile, { message: "the Airplane mode tile in Quick Settings" });
-				this.airplaneTile = { x: (node.bounds.x1 + node.bounds.x2) / 2, y: (node.bounds.y1 + node.bounds.y2) / 2 };
-			}
-			await this.tapScreen(this.airplaneTile.x, this.airplaneTile.y);
-			const done = await waitFor(async () => (await this.airplaneMode()) === on, { timeout: 4_000, message: `Airplane mode to turn ${on ? "on" : "off"}` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
-			if (done) break;
-		}
+		await this.shell(`cmd connectivity airplane-mode ${on ? "enable" : "disable"}`);
+		await waitFor(async () => (await this.airplaneMode()) === on, { timeout: 5_000, message: `Airplane mode to turn ${on ? "on" : "off"}` });
 		if (!on) await this.adb("reverse", "tcp:3000", `tcp:${this.hostPort}`);
 	}
 
@@ -239,6 +232,7 @@ export class Device {
 				id: get("resource-id"),
 				pkg: get("package"),
 				clickable: get("clickable") === "true",
+				focused: get("focused") === "true",
 				bounds: b ? { x1: +b[1], y1: +b[2], x2: +b[3], y2: +b[4] } : null,
 			};
 		});
@@ -549,7 +543,11 @@ export class Device {
 		const count = await page.evaluate(() => document.querySelectorAll("li[data-row]").length);
 		if (count < rows) {
 			await this.deliverMail(rows - count);
-			page = await this.goto(`${APP}/v2/inbox`);
+			// Delivery goes through the inbound queue: wait until the list has the new mail.
+			await waitFor(async () => {
+				page = await this.goto(`${APP}/v2/inbox`);
+				return (await page.evaluate(() => document.querySelectorAll("li[data-row]").length)) >= rows;
+			}, { timeout: 30_000, interval: 1_000, message: `${rows} conversations in the inbox after delivering mail` });
 		}
 		if (path !== "/v2/inbox") await this.goto(`${APP}${path}`);
 		await this.until(() => document.readyState === "complete" && !!document.querySelector("#main"), null, { message: `${path} to load` });

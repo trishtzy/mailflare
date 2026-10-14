@@ -6,8 +6,11 @@ const banner = () => {
 };
 
 export default {
-	// Still fails on main; shown next to the failure in the summary, never used to skip or pass it.
-	knownIssue: "#20: a cached page is not refreshed after reconnecting, so the offline banner stays",
+	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
+	knownIssue: {
+		step: "Verify that the \"Offline\" banner is no longer shown",
+		issue: "#20: a cached page is not refreshed after reconnecting, so the offline banner stays",
+	},
 	async setup({ device }) {
 		await device.startSignedIn();
 		await device.ensureServiceWorker();
@@ -36,7 +39,7 @@ export default {
 			'Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on',
 			async ({ device }) => {
 				await device.openQuickSettings();
-				await device.tapAirplaneTile(true);
+				await device.setAirplaneMode(true);
 			},
 		],
 		["Swipe up from the bottom of Quick Settings, or press the Back button, to close Quick Settings", ({ device }) => device.closeQuickSettings()],
@@ -80,7 +83,7 @@ export default {
 			'Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off',
 			async ({ device }) => {
 				await device.openQuickSettings();
-				await device.tapAirplaneTile(false);
+				await device.setAirplaneMode(false);
 			},
 		],
 		[

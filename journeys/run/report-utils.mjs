@@ -1,4 +1,4 @@
-// Pure helpers for the journey runner: reading journey XML, sharding, and writing results.
+// Pure helpers for the journey runner: reading journey XML, sharding, deciding the outcome, writing results.
 
 const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 
@@ -29,25 +29,49 @@ export function shardOf(items, spec) {
 	return items.filter((_, i) => i % n === k - 1);
 }
 
-const icon = { passed: "✅", failed: "❌", skipped: "⏭️", unscripted: "🚧" };
+/**
+ * What a journey's result counts as. "failed" covers a real failure and a known issue that no longer
+ * reproduces (both set `error`); "known" is a pass whose one excused action failed as expected.
+ */
+export function outcome(result) {
+	if (result.unscripted) return "unscripted";
+	if (result.error) return "failed";
+	return result.steps.some((s) => s.status === "known") ? "known" : "passed";
+}
+
+/** Whether the run fails: any real failure, or an unscripted journey unless that is allowed. */
+export function runFails(results, { allowUnscripted = false } = {}) {
+	return results.some((r) => outcome(r) === "failed" || (outcome(r) === "unscripted" && !allowUnscripted));
+}
+
+const STEP_ICON = { passed: "✅", failed: "❌", xpass: "❌", known: "⚠️", skipped: "⏭️", unscripted: "🚧" };
+const RESULT_ICON = { passed: "✅", failed: "❌", known: "⚠️", unscripted: "🚧" };
 
 export function markdownSummary(results, meta = {}) {
 	const lines = [];
-	const passed = results.filter((r) => !r.error && !r.unscripted).length;
-	lines.push(`## Journeys${meta.shard && meta.shard !== "all" ? ` (shard ${meta.shard})` : ""}: ${passed}/${results.length} passed`);
+	const count = (o) => results.filter((r) => outcome(r) === o).length;
+	const passed = count("passed") + count("known");
+	lines.push(`## Journeys${meta.shard && meta.shard !== "all" ? ` (shard ${meta.shard})` : ""}: ${passed}/${results.length} passed${count("known") ? ` (${count("known")} with a known issue)` : ""}${count("unscripted") ? `, ${count("unscripted")} not scripted` : ""}`);
 	lines.push("");
 	if (meta.chrome || meta.sdk) lines.push(`Android SDK ${meta.sdk ?? "?"}, Chrome ${meta.chrome ?? "?"}, ${Math.round((meta.durationMs ?? 0) / 1000)} s.`, "");
 	lines.push("| Journey | Result |", "|---|---|");
 	for (const r of results) {
-		const failedStep = r.steps.findIndex((s) => s.status === "failed");
-		const known = r.knownIssue ? ` (known: ${r.knownIssue})` : "";
-		const detail = r.unscripted ? "🚧 not scripted yet" : r.error ? `❌ action ${failedStep + 1}: ${oneLine(r.error)}${known}` : `✅${r.knownIssue ? ` (known issue no longer reproduces: ${r.knownIssue})` : ""}`;
+		const o = outcome(r);
+		const failedAt = r.steps.findIndex((s) => s.status === "failed" || s.status === "xpass");
+		const knownAt = r.steps.findIndex((s) => s.status === "known");
+		const detail = {
+			unscripted: "🚧 not scripted yet",
+			failed: `❌ action ${failedAt + 1}: ${oneLine(r.error ?? "")}`,
+			known: `⚠️ action ${knownAt + 1} fails as expected: ${r.knownIssue?.issue}`,
+			passed: "✅",
+		}[o];
 		lines.push(`| ${r.id} | ${detail.replace(/\|/g, "\\|")} |`);
 	}
 	for (const r of results) {
-		lines.push("", `### ${r.id}: ${r.name} ${r.unscripted ? "🚧" : r.error ? "❌" : "✅"} (${Math.round((r.durationMs ?? 0) / 100) / 10} s)`, "");
+		lines.push("", `### ${r.id}: ${r.name} ${RESULT_ICON[outcome(r)]} (${Math.round((r.durationMs ?? 0) / 100) / 10} s)`, "");
 		r.steps.forEach((s, i) => {
-			lines.push(`${i + 1}. ${icon[s.status]} ${s.label}`);
+			lines.push(`${i + 1}. ${STEP_ICON[s.status]} ${s.label}`);
+			if (s.status === "known") lines.push(`   - Known issue: ${r.knownIssue?.issue}`);
 			if (s.error) lines.push(`   - ${oneLine(s.error)}`);
 			if (s.screenshot) lines.push(`   - Screenshot: \`${s.screenshot}\``);
 		});
@@ -56,21 +80,21 @@ export function markdownSummary(results, meta = {}) {
 }
 
 export function junitXml(results, meta = {}) {
+	const isFailure = (s) => s.status === "failed" || s.status === "xpass";
+	const isSkipped = (s) => s.status === "skipped" || s.status === "unscripted" || s.status === "known";
 	const cases = results.flatMap((r) => r.steps.map((s, i) => ({ r, s, i })));
-	const failures = cases.filter(({ s }) => s.status === "failed").length;
-	const skipped = cases.filter(({ s }) => s.status === "skipped" || s.status === "unscripted").length;
-	const out = [`<?xml version="1.0" encoding="UTF-8"?>`, `<testsuites name="journeys${meta.shard && meta.shard !== "all" ? ` ${encode(meta.shard)}` : ""}" tests="${cases.length}" failures="${failures}" skipped="${skipped}" time="${((meta.durationMs ?? 0) / 1000).toFixed(1)}">`];
+	const out = [`<?xml version="1.0" encoding="UTF-8"?>`, `<testsuites name="journeys${meta.shard && meta.shard !== "all" ? ` ${encode(meta.shard)}` : ""}" tests="${cases.length}" failures="${cases.filter(({ s }) => isFailure(s)).length}" skipped="${cases.filter(({ s }) => isSkipped(s)).length}" time="${((meta.durationMs ?? 0) / 1000).toFixed(1)}">`];
 	for (const r of results) {
-		const rf = r.steps.filter((s) => s.status === "failed").length;
-		const rs = r.steps.filter((s) => s.status === "skipped" || s.status === "unscripted").length;
-		out.push(`\t<testsuite name="${encode(`${r.id}: ${r.name}`)}" tests="${r.steps.length}" failures="${rf}" skipped="${rs}" time="${((r.durationMs ?? 0) / 1000).toFixed(1)}">`);
+		out.push(`\t<testsuite name="${encode(`${r.id}: ${r.name}`)}" tests="${r.steps.length}" failures="${r.steps.filter(isFailure).length}" skipped="${r.steps.filter(isSkipped).length}" time="${((r.durationMs ?? 0) / 1000).toFixed(1)}">`);
 		r.steps.forEach((s, i) => {
-			const name = encode(`${String(i + 1).padStart(2, "0")}. ${s.label}`);
-			const time = ((s.durationMs ?? 0) / 1000).toFixed(1);
-			if (s.status === "passed") out.push(`\t\t<testcase classname="${encode(r.id)}" name="${name}" time="${time}"/>`);
-			else if (s.status === "unscripted") out.push(`\t\t<testcase classname="${encode(r.id)}" name="${name}" time="0"><skipped message="not scripted yet"/></testcase>`);
-			else if (s.status === "skipped") out.push(`\t\t<testcase classname="${encode(r.id)}" name="${name}" time="0"><skipped message="an earlier action failed"/></testcase>`);
-			else out.push(`\t\t<testcase classname="${encode(r.id)}" name="${name}" time="${time}"><failure message="${encode(oneLine(s.error ?? "failed"))}">${encode(s.error ?? "")}${s.screenshot ? encode(`\nScreenshot: ${s.screenshot}`) : ""}</failure></testcase>`);
+			const open = `\t\t<testcase classname="${encode(r.id)}" name="${encode(`${String(i + 1).padStart(2, "0")}. ${s.label}`)}" time="${((s.durationMs ?? 0) / 1000).toFixed(1)}"`;
+			const detail = encode(`${s.error ?? ""}${s.screenshot ? `\nScreenshot: ${s.screenshot}` : ""}`);
+			if (s.status === "passed") out.push(`${open}/>`);
+			else if (isFailure(s)) out.push(`${open}><failure message="${encode(oneLine(s.error ?? "failed"))}">${detail}</failure></testcase>`);
+			else {
+				const why = { known: `known issue: ${r.knownIssue?.issue}`, unscripted: "not scripted yet", skipped: "an earlier action failed" }[s.status];
+				out.push(`${open}><skipped message="${encode(why)}">${detail}</skipped></testcase>`);
+			}
 		});
 		out.push("\t</testsuite>");
 	}

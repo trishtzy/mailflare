@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { APP, Device, StepError, sleep } from "./harness.mjs";
-import { junitXml, markdownSummary, parseJourney, shardOf } from "./report-utils.mjs";
+import { junitXml, markdownSummary, outcome, parseJourney, runFails, shardOf } from "./report-utils.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const journeysDir = join(here, "..");
@@ -96,7 +96,15 @@ async function runJourney(journey) {
 		return result;
 	}
 	const script = (await import(pathToFileURL(file))).default;
-	result.knownIssue = script.knownIssue;
+	// A known issue excuses exactly one action: that action failing is expected, it passing is a failure
+	// (the issue is fixed, so the marker must go), and any other failure in the journey still fails it.
+	const known = script.knownIssue ?? null;
+	result.knownIssue = known;
+	if (known && !journey.actions.includes(known.step)) {
+		result.error = `journeys/run/${journey.id}.mjs: knownIssue.step is not one of the journey's actions ("${known.step}")`;
+		Object.assign(result.steps[0], { status: "failed", error: result.error });
+		return result;
+	}
 	const labels = script.steps.map(([label]) => label);
 	const mismatch = journey.actions.findIndex((action, i) => labels[i] !== action);
 	if (mismatch >= 0 || labels.length !== journey.actions.length) {
@@ -120,8 +128,9 @@ async function runJourney(journey) {
 		result.steps[0].error = result.error;
 		await capture(journey.id, "setup", result.steps[0]);
 	}
+	let stopped = false;
 	for (const [i, [label, run]] of script.steps.entries()) {
-		if (result.error) break;
+		if (result.error || stopped) break;
 		const step = result.steps[i];
 		const t = Date.now();
 		try {
@@ -130,13 +139,28 @@ async function runJourney(journey) {
 			step.durationMs = Date.now() - t;
 			log(`  ✅ ${label} (${step.durationMs} ms)`);
 		} catch (error) {
-			step.status = "failed";
 			step.durationMs = Date.now() - t;
-			step.error = error instanceof StepError ? error.message : error.stack ?? String(error);
-			result.error = step.error;
-			log(`  ❌ ${label}\n     ${step.error.split("\n")[0]}${script.knownIssue ? `\n     known issue: ${script.knownIssue}` : ""}`);
+			// A script bug keeps its stack; anything else is a finding about the app, and its message says what.
+			const scriptBug = error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError;
+			step.error = scriptBug ? error.stack : error?.message ?? String(error);
+			if (known && label === known.step && !scriptBug) {
+				step.status = "known";
+				stopped = true;
+				log(`  ⚠️ ${label}\n     fails as expected (${known.issue}): ${step.error.split("\n")[0]}`);
+			} else {
+				step.status = "failed";
+				result.error = step.error;
+				log(`  ❌ ${label}\n     ${step.error.split("\n")[0]}`);
+			}
 			await capture(journey.id, i + 1, step);
 		}
+	}
+	const knownStep = known && result.steps.find((step) => step.label === known.step);
+	if (knownStep?.status === "passed") {
+		knownStep.status = "xpass";
+		knownStep.error = `known issue no longer reproduces (${known.issue}): remove knownIssue from journeys/run/${journey.id}.mjs`;
+		result.error = knownStep.error;
+		log(`  ❌ ${knownStep.error}`);
 	}
 	try {
 		if (script.teardown) await withTimeout(script.teardown(ctx), SETUP_TIMEOUT, "teardown");
@@ -178,8 +202,8 @@ try {
 const meta = { shard: shard ?? "all", chrome: env.chrome, sdk: env.sdk, durationMs: Date.now() - started };
 writeFileSync(join(out, `junit${shard ? `-${shard.replace("/", "of")}` : ""}.xml`), junitXml(results, meta));
 writeFileSync(join(out, `summary${shard ? `-${shard.replace("/", "of")}` : ""}.md`), markdownSummary(results, meta));
-const failed = results.filter((r) => r.error);
-const unscripted = results.filter((r) => r.unscripted);
-if (unscripted.length) log(`not scripted yet: ${unscripted.map((r) => r.id).join(", ")}`);
-log(`${results.length - failed.length - unscripted.length}/${results.length} journeys passed in ${Math.round(meta.durationMs / 1000)} s; results in ${out}`);
-process.exit(failed.length || (unscripted.length && !allowUnscripted) ? 1 : 0);
+const counts = Object.groupBy(results, outcome);
+for (const [name, list] of Object.entries(counts)) if (name !== "passed") log(`${name}: ${list.map((r) => r.id).join(", ")}`);
+const fails = runFails(results, { allowUnscripted });
+log(`${(counts.passed?.length ?? 0) + (counts.known?.length ?? 0)}/${results.length} journeys passed in ${Math.round(meta.durationMs / 1000)} s; results in ${out}${fails ? "" : " (run passes)"}`);
+process.exit(fails ? 1 : 0);

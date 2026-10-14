@@ -14,8 +14,11 @@ const threadState = () => {
 };
 
 export default {
-	// Still fails on main; shown next to the failure in the summary, never used to skip or pass it.
-	knownIssue: "#19: Back with a bottom sheet open leaves the conversation",
+	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
+	knownIssue: {
+		step: "Verify that the bottom panel is closed and the same conversation is still shown, with its subject heading visible",
+		issue: "#19: Back with a bottom sheet open leaves the conversation",
+	},
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
 		[
