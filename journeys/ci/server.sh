@@ -53,11 +53,15 @@ stamp "built"
 			misses=$((misses + 1))
 			if [ "$misses" -ge 3 ]; then
 				echo "$(date -u +%H:%M:%S) wrangler dev stopped answering /login; killing it" | tee -a "$OUT/wrangler-restarts.log"
+				{ free -m; sudo dmesg 2>/dev/null | grep -iE "oom|killed process|segfault" | tail -5; } >> "$OUT/wrangler-restarts.log" 2>&1
 				cp ~/.config/.wrangler/logs/*.log "$OUT/" 2>/dev/null || true
 				pkill -f "wrangler dev --port $PORT" || true
 				pkill -f workerd || true
 				misses=0
-				sleep 10
+				# Let the restart loop bring it back before watching again.
+				t=0
+				until curl -sf --max-time 5 "http://127.0.0.1:$PORT/login" -o /dev/null || [ $t -ge 90 ]; do sleep 2; t=$((t + 2)); done
+				echo "$(date -u +%H:%M:%S) wrangler dev answering again after ${t}s" >> "$OUT/wrangler-restarts.log"
 			fi
 		fi
 		sleep 3

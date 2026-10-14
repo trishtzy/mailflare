@@ -345,7 +345,10 @@ export class Device {
 					const frame = await p.evaluate(() => Promise.race([new Promise((r) => requestAnimationFrame(() => r(document.visibilityState === "visible"))), new Promise((r) => setTimeout(() => r(false), 400))])).catch(() => false);
 					if (frame) painting.push(p);
 				}
-				return painting.at(-1) ?? null;
+				const front = painting.at(-1) ?? null;
+				// Never leave two Mailflare tabs open: DevTools could watch one while touches go to the other.
+				if (front) for (const p of candidates) if (p !== front) await p.close().catch(() => {});
+				return front;
 			},
 			{ timeout, message: "a localhost:3000 page in front in Chrome" },
 		);
@@ -514,10 +517,19 @@ export class Device {
 	 * function), waits for it to hold and taps once more if the first touch had no effect.
 	 */
 	async tap(target, options = {}) {
-		if (!options.effect) return this.tapOnce(target, options);
 		const { effect, arg, effectTimeout = 3_000, ...rest } = options;
 		for (let attempt = 1; ; attempt++) {
-			const result = await this.tapOnce(target, rest);
+			let result;
+			try {
+				result = await this.tapOnce(target, rest);
+			} catch (error) {
+				// A touch that never reached the page is worth one more try; then say where it went.
+				if (!/never reached the page/.test(error.message)) throw error;
+				if (attempt >= 2) fail(`${error.message}; ${await this.diagnoseTouch(this.width / 2, this.height * 0.3)}`);
+				this.log("  the tap never reached the page; tapping again");
+				continue;
+			}
+			if (!effect) return result;
 			const ok = await waitFor(() => this.eval(effect, arg), { timeout: effectTimeout, message: `the tap on ${describeTarget(typeof target === "string" ? { selector: target } : target)} to take effect` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
 			if (ok) return result;
 			this.log(`  the tap on ${describeTarget(typeof target === "string" ? { selector: target } : target)} had no effect; tapping again`);
