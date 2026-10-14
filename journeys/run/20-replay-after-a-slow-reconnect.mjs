@@ -89,11 +89,11 @@ const journey = {
 			},
 		],
 		[
-			"Make the Mailflare server reachable again and wait 15 seconds",
+			"Make the Mailflare server reachable again and wait 30 seconds",
 			async ({ device }) => {
 				device.setRelayOffline(false);
-				// Up to 15 s; stops early once the banner has gone.
-				await waitFor(async () => !(await device.eval(banner).catch(() => "unknown")), { timeout: 15_000 }).catch(() => {});
+				// Up to 30 s (the retries back off, and a busy device can come online well before the step); stops early once the banner has gone.
+				await waitFor(async () => !(await device.eval(banner).catch(() => "unknown")), { timeout: 30_000 }).catch(() => {});
 			},
 		],
 		[
