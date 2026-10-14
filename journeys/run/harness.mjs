@@ -250,8 +250,8 @@ export class Device {
 	 * journeys are about the app, not the gesture. The Airplane mode tile itself is still tapped.
 	 */
 	async openQuickSettings() {
-		await this.shell("cmd statusbar expand-settings");
-		await waitFor(() => this.shadeOpen(), { timeout: 3_000, message: "Quick Settings to open" });
+		// A busy SystemUI opens the panel late or drops the request: ask again only once it still is not open.
+		await retryUnlessDone(() => this.shell("cmd statusbar expand-settings"), () => this.shadeOpen(), { timeout: 3_000, message: "Quick Settings to open", log: this.log });
 		await sleep(500);
 	}
 
@@ -446,7 +446,7 @@ export class Device {
 		const sx = this.width / 2;
 		const sy = this.height * 0.3;
 		// An earlier calibration tap on this document may have arrived after its wait: use it, not another tap.
-		let hit = retry ? await page.evaluate(() => window.__jCalState?.point ?? null).catch(() => null) : null;
+		let hit = await page.evaluate(() => (window.__jCalState && !window.__jCalState.done ? window.__jCalState.point : null)).catch(() => null);
 		if (hit) this.log("  the earlier calibration tap reached the page late; using it");
 		if (!hit) {
 			await page.evaluate(() => {
