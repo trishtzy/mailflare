@@ -31,6 +31,7 @@ const centreOf = (selector) => {
 async function openAndTapAtOnce(device, state, selector) {
 	const where = state.targets[selector];
 	for (let attempt = 1; attempt <= 12; attempt++) {
+		// Resetting for another try, like the harness's own second tap: not a journey action.
 		if (attempt > 1) await device.goto(`${APP}/v2/inbox`);
 		await device.until(() => location.pathname === "/v2/inbox" && [...document.querySelectorAll("#main li[data-row]")].some(window.__j.shown), null, { message: "the inbox list" });
 		const { page, box: row } = await device.locate("#main li[data-row] .row-subject");
@@ -46,12 +47,15 @@ async function openAndTapAtOnce(device, state, selector) {
 			});
 		});
 		await device.shell(`input tap ${Math.round(from.x)} ${Math.round(from.y)} & sleep ${(state.gap / 1000).toFixed(3)}; input tap ${Math.round(to.x)} ${Math.round(to.y)}; wait`);
-		const seen = await device.until(() => window.__jAtOnce && window.__jAtOnce.swap !== null && window.__jAtOnce.downs.length >= 2 && window.__jAtOnce, null, { timeout: 8_000, message: "the conversation to open and both touches to land" }).catch(() => null);
+		const seen = await device.until(() => window.__jAtOnce && window.__jAtOnce.swap !== null && window.__jAtOnce.downs.length >= 2 && window.__jAtOnce, null, { timeout: 3_000, message: "the conversation to open and both touches to land" }).catch(() => null);
 		const second = seen?.downs[1];
 		const delta = second ? second.t - seen.swap : null;
 		device.log(`  attempt ${attempt}: gap ${state.gap} ms, second touch ${delta === null ? "not seen" : `${Math.round(delta)} ms after the swap`}${second ? ` on ${second.on}` : ""}`);
 		if (delta !== null && delta >= 0 && delta <= AT_ONCE_MS) return;
-		if (delta === null || delta < 0) state.gap += delta === null ? 10 : Math.ceil(-delta) + 3;
+		// Far off either way, a touch was lost (the first one after the screen changed size often is) rather
+		// than mistimed: try again with the same gap.
+		if (delta === null || Math.abs(delta) > 150) continue;
+		if (delta < 0) state.gap += Math.ceil(-delta) + 3;
 		else state.gap = Math.max(0, state.gap - Math.floor(delta - AT_ONCE_MS / 2));
 	}
 	fail(`could not land the second touch within ${AT_ONCE_MS} ms of the conversation opening`);
