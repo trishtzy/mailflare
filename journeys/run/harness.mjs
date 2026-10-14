@@ -140,13 +140,19 @@ export class Device {
 		if (offline) for (const socket of this.relaySockets) socket.destroy();
 	}
 
+	// Every device command is capped: one hung adb call must fail its step, not stall the whole shard.
 	async adb(...args) {
-		const { stdout } = await exec("adb", ["-s", this.serial, ...args], { maxBuffer: 32 * 1024 * 1024, encoding: "buffer" });
+		const { stdout } = await exec("adb", ["-s", this.serial, ...args], { maxBuffer: 32 * 1024 * 1024, encoding: "buffer", timeout: 30_000 });
 		return stdout;
 	}
 
 	async shell(command) {
-		return (await this.android.shell(command)).toString("utf8");
+		let timer;
+		const out = await Promise.race([
+			this.android.shell(command),
+			new Promise((_, reject) => (timer = setTimeout(() => reject(new StepError(`adb shell "${command.slice(0, 60)}" did not finish within 30 s`)), 30_000))),
+		]).finally(() => clearTimeout(timer));
+		return out.toString("utf8");
 	}
 
 	async tapScreen(x, y) {

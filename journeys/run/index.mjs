@@ -35,6 +35,7 @@ const only = args;
 
 const STEP_TIMEOUT = 60_000;
 const SETUP_TIMEOUT = 90_000;
+const JOURNEY_TIMEOUT = 8 * 60_000;
 
 const all = readdirSync(journeysDir)
 	.filter((name) => name.endsWith(".journey.xml"))
@@ -243,7 +244,12 @@ try {
 	log(`Chrome ${env.chrome}, Android SDK ${env.sdk}; running ${selected.map((j) => j.id.slice(0, 2)).join(" ")}`);
 	for (const file of selected) {
 		const journey = parseJourney(file.id, file.xml);
-		results.push(await runJourney(journey));
+		// A journey that wedges (say, an unanswered DevTools call) fails on its own instead of stalling the shard.
+		results.push(await withTimeout(runJourney(journey), JOURNEY_TIMEOUT, `journey ${journey.id}`).catch((error) => {
+			log(`  ❌ ${error.message}`);
+			return { id: journey.id, name: journey.name, steps: journey.actions.map((label, i) => ({ label, status: i === 0 ? "failed" : "skipped", error: i === 0 ? error.message : undefined })), error: error.message, durationMs: JOURNEY_TIMEOUT };
+		}));
+		await device.setOffline(false).catch(() => {});
 		await sleep(250);
 	}
 } catch (error) {

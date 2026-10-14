@@ -18,4 +18,8 @@ adb shell getprop ro.build.version.sdk
 adb shell dumpsys package com.android.chrome 2>/dev/null | grep -m1 versionName
 adb shell wm size
 adb shell wm density
-node journeys/run/index.mjs --shard "$SHARD" --out "$OUT" "$@"
+# Hard stop well inside the job's timeout, so the summary and artifacts still get published.
+timeout -k 10 900 node journeys/run/index.mjs --shard "$SHARD" --out "$OUT" "$@"
+status=$?
+[ $status -eq 124 ] && echo "the journey runner did not finish within 15 minutes"
+exit $status

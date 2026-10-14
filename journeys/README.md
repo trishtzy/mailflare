@@ -111,21 +111,21 @@ Push delivery is not a journey, because it needs mail sent from outside the devi
 
 ## Last run
 
-2026-10-14, `main` at f251789, Android 16 emulator, Chrome 133:
+2026-10-14, scripted (`node journeys/run/index.mjs`), branch `ci/journeys` on `main` at 1cce18b, Android 16 emulator, Chrome 133; three full runs in a row locally, and in CI on every pull request:
 
 | Journey | Result |
 |---|---|
 | 01 | ✅ |
 | 02 | ✅ |
-| 03 | ❌ Back with the drawer open navigates away (pre-existing; same before #12–#18) |
-| 04 | ❌ Back with a bottom sheet open leaves the conversation (#19) |
+| 03 | ⚠️ "Verify that the drawer is closed…" fails as expected: Back with the drawer open leaves the list (#19) |
+| 04 | ⚠️ "Verify that the bottom panel is closed…" fails as expected: Back with a bottom sheet open leaves the conversation (#19) |
 | 05 | ✅ |
 | 06 | ✅ |
 | 07 | ✅ |
-| 08 | ❌ A cached conversation is never refreshed after reconnecting (#20) |
+| 08 | ⚠️ "Verify that the Offline banner is no longer shown" fails as expected: a cached conversation is never refreshed after reconnecting (#20) |
 | 09 | ✅ |
 | 10 | ✅ |
 | 11 | ✅ |
 | 12 | ✅ |
 
-Push delivery (by hand): ✅ delivered with the app closed, ✅ suppressed with it open, ✅ notification opens the conversation.
+Push delivery (by hand, 2026-10-14 at f251789): ✅ delivered with the app closed, ✅ suppressed with it open, ✅ notification opens the conversation.

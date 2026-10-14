@@ -52,6 +52,8 @@ jobs:
         shard: [1, 2, 3]
     env:
       API_LEVEL: 36
+      # A cache download stalled for over 20 minutes once; give up after 3 (a miss recreates the AVD).
+      SEGMENT_DOWNLOAD_TIMEOUT_MINS: 3
       MAILFLARE_HOST_PORT: 3000
       CDP_PORT: 9222
     steps:
