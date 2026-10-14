@@ -4,8 +4,9 @@ const chrome = (n) => n.pkg === "com.android.chrome";
 const launcher = (n) => /launcher/.test(n.pkg);
 const homeIcon = (n) => launcher(n) && n.clickable && /^Mailflare$/.test(n.desc || n.text);
 
-/** The labels of what the launcher shows now (one home screen page, or the app drawer), top to bottom. */
-const launcherLabels = async (device) => (await device.nativeNodes()).filter((n) => launcher(n) && n.bounds && (n.desc || n.text)).map((n) => n.desc || n.text);
+/** What the launcher shows now (one home screen page, or the app drawer), top to bottom. */
+const launcherNodes = async (device) => (await device.nativeNodes()).filter((n) => launcher(n) && n.bounds);
+const labelsOf = (nodes) => nodes.filter((n) => n.desc || n.text).map((n) => n.desc || n.text);
 
 /**
  * Where the launcher put Chrome's new shortcut: the home screen page index it logged when it placed it
@@ -27,23 +28,23 @@ async function showHomePage(device, index) {
 	await device.home();
 	await sleep(400);
 	await device.home();
-	let labels = await waitFor(async () => {
-		const now = await launcherLabels(device);
-		return now.length ? now : null;
+	let nodes = await waitFor(async () => {
+		const now = await launcherNodes(device);
+		return labelsOf(now).length ? now : null;
 	}, { timeout: 10_000, message: "the launcher's home screen" });
 	for (let page = 0; page < index; page++) {
 		let moved = null;
 		for (let swipe = 1; swipe <= 3 && !moved; swipe++) {
 			await device.swipeScreen(device.width * 0.85, device.height * 0.5, device.width * 0.15, device.height * 0.5, 300);
 			moved = await waitFor(async () => {
-				const now = await launcherLabels(device);
-				return now.length && now.join("|") !== labels.join("|") ? now : null;
+				const now = await launcherNodes(device);
+				return labelsOf(now).length && labelsOf(now).join("|") !== labelsOf(nodes).join("|") ? now : null;
 			}, { timeout: 3_000, interval: 300, message: `home screen page ${page + 2}` }).catch(() => null);
 		}
-		if (!moved) return { labels, reached: page };
-		labels = moved;
+		if (!moved) return { nodes, reached: page };
+		nodes = moved;
 	}
-	return { labels, reached: index };
+	return { nodes, reached: index };
 }
 
 const journey = {
@@ -115,19 +116,27 @@ const journey = {
 			async ({ device, state }) => {
 				// The icon is on the page the launcher logs once it has placed the shortcut, which it does
 				// after coming to the front, so look there until it shows up (or the deadline passes).
+				const started = Date.now();
+				const at = () => `${((Date.now() - started) / 1000).toFixed(1)} s`;
 				let icon = (await device.nativeNodes()).find((n) => n.bounds && homeIcon(n)) ?? null;
-				const seen = [];
+				const seen = [icon ? `the screen in front at ${at()}: the icon` : `the screen in front at ${at()}: no icon`];
 				let page = null;
+				let placedAt = null;
 				const deadline = Date.now() + 30_000;
 				while (!icon && Date.now() < deadline) {
-					page ??= await placedOnPage(device, state.since);
+					if (page === null) {
+						page = await placedOnPage(device, state.since);
+						if (page !== null) placedAt = at();
+					}
 					// Until the launcher says where, look through the first pages.
-					const target = page ?? seen.length % 3;
+					const target = page ?? (seen.length - 1) % 3;
 					const shown = await showHomePage(device, target);
-					icon = (await device.nativeNodes()).find((n) => n.bounds && homeIcon(n)) ?? null;
-					seen.push(`page ${shown.reached + 1}${shown.reached < target ? ` (page ${target + 1} wanted; the swipe did not move)` : ""}: ${shown.labels.slice(0, 12).join(", ") || "nothing"}`);
+					icon = shown.nodes.find(homeIcon) ?? null;
+					seen.push(`page ${shown.reached + 1} at ${at()}${shown.reached < target ? ` (page ${target + 1} wanted; the swipe did not move)` : ""}: ${icon ? "the icon" : labelsOf(shown.nodes).slice(0, 12).join(", ") || "nothing"}`);
 					if (!icon) await sleep(1_000);
 				}
+				const placement = page === null ? "no placement logged" : `placed on page ${page + 1} (read at ${placedAt})`;
+				if (icon) device.log(`  launcher log: ${placement}; looked at ${seen.join("; ")}`);
 				let drawer = null;
 				if (!icon) {
 					// Not on the home screen pages: open the app drawer (swipe up from the bottom). A Chrome-hosted
@@ -137,12 +146,12 @@ const journey = {
 					await device.swipeScreen(device.width / 2, device.height * 0.85, device.width / 2, device.height * 0.2, 300);
 					await sleep(800);
 					icon = await device.findNative(homeIcon, { timeout: 5_000, message: "the Mailflare icon" }).catch(() => null);
-					drawer = (await launcherLabels(device)).slice(0, 20).join(", ");
+					drawer = labelsOf(await launcherNodes(device)).slice(0, 20).join(", ");
 				}
 				if (!icon) {
 					const pinned = (await device.shell("dumpsys shortcut 2>/dev/null | grep -A3 'Package: com.android.chrome' | grep -iE 'pinned|shortLabel|Mailflare' | head -5")).replace(/\s+/g, " ").trim();
 					const queued = (await device.shell(`logcat -d -v epoch -T ${state.since}.000 -s ItemInstallQueue:D AddWorkspaceItemsTask:D 2>/dev/null | grep -cE 'to queue|screen='`)).trim();
-					fail(`no "Mailflare" icon on the home screen or in the app drawer (Chrome shortcuts: ${pinned || "none"}; launcher log: ${page === null ? `no placement logged (${queued} queue/placement lines)` : `placed on page ${page + 1}`}; home screen ${seen.join("; ") || "not looked at"}; app drawer: ${drawer || "not opened"})`);
+					fail(`no "Mailflare" icon on the home screen or in the app drawer (Chrome shortcuts: ${pinned || "none"}; launcher log: ${page === null ? `no placement logged (${queued} queue/placement lines)` : placement}; looked at ${seen.join("; ")}; app drawer: ${drawer || "not opened"})`);
 				}
 				// The label sits under the image; the image is the top part of the icon's box.
 				const imageBottom = icon.bounds.y1 + (icon.bounds.x2 - icon.bounds.x1) * 0.9;
