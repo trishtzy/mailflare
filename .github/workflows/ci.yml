@@ -81,6 +81,16 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The system image and emulator are otherwise downloaded on every run, and that download has
+      # failed with "Error on ZipFile unknown archive" often enough to fail a shard on its own.
+      - name: Restore the system image and emulator
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/local/lib/android/sdk/system-images/android-${{ env.API_LEVEL }}/google_apis_playstore/x86_64
+            /usr/local/lib/android/sdk/emulator
+          key: android-sdk-${{ env.API_LEVEL }}-playstore-x86_64-v1
+
       - name: Restore the AVD snapshot
         id: avd
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
