@@ -229,8 +229,13 @@ export class Device {
 	 * state reported late a second Back can land on the page and navigate it.
 	 */
 	async closeQuickSettings() {
-		await this.shell("cmd statusbar collapse");
-		await waitFor(async () => !(await this.shadeOpen()), { timeout: 5_000, message: "Quick Settings to close" });
+		// SystemUI can drop the request while it is busy (say, reconnecting Wi-Fi after Airplane mode): ask again.
+		for (let attempt = 1; ; attempt++) {
+			await this.shell("cmd statusbar collapse");
+			const closed = await waitFor(async () => !(await this.shadeOpen()), { timeout: 5_000, message: "Quick Settings to close" }).catch((error) => (attempt >= 3 ? Promise.reject(error) : false));
+			if (closed) return;
+			this.log("  Quick Settings still open; collapsing again");
+		}
 	}
 
 	/**
