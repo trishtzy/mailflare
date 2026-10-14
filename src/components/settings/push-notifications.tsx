@@ -30,7 +30,7 @@ function subscribeToConnectivity(onChange: () => void): () => void {
 const DESCRIPTIONS: Record<PushControlState, string> = {
 	loading: "Checking this device...",
 	unavailable: "Push notifications are not configured on this server. An administrator can turn them on.",
-	offline: "You're offline. Reconnect to check or change notifications on this device.",
+	offline: "Reconnect to check or change notifications on this device.",
 	unsupported: "This browser cannot show push notifications.",
 	install: "On iPhone and iPad, notifications work only from the installed app. In Safari, tap Share, then Add to Home Screen, and turn them on from the app.",
 	blocked: "Notifications are blocked for this site. Allow them in your browser's site settings, then come back here.",
