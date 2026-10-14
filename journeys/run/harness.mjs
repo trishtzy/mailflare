@@ -179,13 +179,13 @@ export class Device {
 		await sleep(500);
 	}
 
-	/** Whether the notification shade / Quick Settings window is drawn (focus alone can move back to the app first). */
+	/**
+	 * Whether the notification shade or Quick Settings is open, as SystemUI itself reports it. The window
+	 * manager's focus and visibility flags for the shade both lag behind by seconds.
+	 */
 	async shadeOpen() {
-		const windows = await this.shell("dumpsys window windows");
-		const start = windows.search(/Window #\d+ Window\{[^}]*NotificationShade\}:/);
-		if (start < 0) return false;
-		const next = windows.slice(start + 1).search(/\n\s*Window #\d+ /);
-		return /isVisible=true/.test(windows.slice(start, next < 0 ? undefined : start + 1 + next));
+		const state = await this.shell("dumpsys activity service com.android.systemui/.SystemUIService 2>/dev/null | grep -m1 'mExpandedVisible='");
+		return /mExpandedVisible=true/.test(state);
 	}
 
 	/**
