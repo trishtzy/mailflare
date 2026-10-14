@@ -88,7 +88,7 @@ async function prepareDevice() {
 }
 
 /** The server answers on the host port (waits a while: a restarted wrangler dev takes a few seconds). */
-async function serverUp(timeout = 30_000) {
+async function serverUp(timeout = 60_000) {
 	const deadline = Date.now() + timeout;
 	while (Date.now() < deadline) {
 		const res = await fetch(`http://127.0.0.1:${device.hostPort}/login`).catch(() => null);

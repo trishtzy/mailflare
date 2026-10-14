@@ -73,7 +73,10 @@ const journey = {
 					if (/You.re offline/.test(document.body.innerText)) throw new Error('the "You\'re offline" page is shown');
 					const body = [...document.querySelectorAll(".msg.is-expanded .msg-content")].at(-1);
 					return window.__j.byText("h1.thread-subject", subject) && body && window.__j.text(body).includes(text.slice(0, 40));
-				}, state, { timeout: 15_000, message: `"${state.subject}" and its message text offline` }).catch((error) => {
+				}, state, { timeout: 15_000, message: `"${state.subject}" and its message text offline` }).then(async () => {
+					// For the report: whether this is the stored copy, which is what #20 is about.
+					state.offlineCopy = await device.eval(() => ({ cachedAt: document.body.dataset.cachedAt ?? null, banner: document.querySelector("[data-offline-banner]")?.innerText.trim() ?? null }));
+				}, (error) => {
 					const errorPage = device.pages().find((p) => p.url().startsWith("chrome-error:"));
 					throw errorPage ? new Error(`Chrome shows its error page (${errorPage.url()})`) : error;
 				});
@@ -96,8 +99,10 @@ const journey = {
 		],
 		[
 			'Verify that the "Offline" banner is no longer shown',
-			async ({ device }) => {
+			async ({ device, state }) => {
 				const text = await device.eval(banner);
+				const now = await device.eval(() => ({ path: location.pathname, cachedAt: document.body.dataset.cachedAt ?? null }));
+				device.log(`  offline copy: ${JSON.stringify(state.offlineCopy)}; after reconnecting: ${JSON.stringify({ ...now, banner: text })}`);
 				expect(!text, `the banner still reads "${text}" after reconnecting`);
 			},
 		],

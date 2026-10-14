@@ -33,13 +33,34 @@ stamp "seeded"
 npm run build > "$OUT/build.log" 2>&1
 stamp "built"
 
-# wrangler dev has been seen to exit with an empty "[ERROR]" on CI; restart it (and say so) rather than
-# failing every journey after it. Each restart is logged to wrangler-restarts.log and shown in the summary.
+# wrangler dev has been seen on CI to print an empty "[ERROR]" and stop answering without exiting.
+# Restart it when it exits, and kill it when /login fails three checks in a row, rather than failing
+# every journey after it. Each restart is logged to wrangler-restarts.log and shown in the job summary.
 (
 	while true; do
 		npx wrangler dev --port "$PORT" --ip 127.0.0.1 >> "$OUT/wrangler.log" 2>&1
 		echo "$(date -u +%H:%M:%S) wrangler dev exited with $?; restarting" | tee -a "$OUT/wrangler-restarts.log"
 		sleep 1
+	done
+) &
+(
+	until [ -f "$OUT/server.ready" ]; do sleep 2; done
+	misses=0
+	while true; do
+		if curl -sf --max-time 5 "http://127.0.0.1:$PORT/login" -o /dev/null; then
+			misses=0
+		else
+			misses=$((misses + 1))
+			if [ "$misses" -ge 3 ]; then
+				echo "$(date -u +%H:%M:%S) wrangler dev stopped answering /login; killing it" | tee -a "$OUT/wrangler-restarts.log"
+				cp ~/.config/.wrangler/logs/*.log "$OUT/" 2>/dev/null || true
+				pkill -f "wrangler dev --port $PORT" || true
+				pkill -f workerd || true
+				misses=0
+				sleep 10
+			fi
+		fi
+		sleep 3
 	done
 ) &
 for _ in $(seq 1 90); do

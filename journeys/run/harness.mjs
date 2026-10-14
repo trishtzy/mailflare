@@ -189,16 +189,12 @@ export class Device {
 	}
 
 	/**
-	 * Back closes Quick Settings. The shade window can report itself visible for a moment after it has
-	 * closed, and a second Back would then reach the page and navigate it, so the fallback is a swipe up
-	 * from the bottom of the panel (the journey's other way to close it), which cannot navigate.
+	 * Closes Quick Settings with `cmd statusbar collapse`, the counterpart of opening it. Back first
+	 * collapses the full panel to the notification shade and only then closes it, and with the shade's
+	 * state reported late a second Back can land on the page and navigate it.
 	 */
 	async closeQuickSettings() {
-		await this.back();
-		const closed = await waitFor(async () => !(await this.shadeOpen()), { timeout: 5_000, message: "Quick Settings to close" }).catch(() => false);
-		if (closed) return;
-		this.log("  Quick Settings still open after Back; swiping it up");
-		await this.swipeScreen(this.width / 2, this.height * 0.92, this.width / 2, this.height * 0.08, 250);
+		await this.shell("cmd statusbar collapse");
 		await waitFor(async () => !(await this.shadeOpen()), { timeout: 5_000, message: "Quick Settings to close" });
 	}
 
