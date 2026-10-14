@@ -33,7 +33,15 @@ stamp "seeded"
 npm run build > "$OUT/build.log" 2>&1
 stamp "built"
 
-npx wrangler dev --port "$PORT" --ip 127.0.0.1 > "$OUT/wrangler.log" 2>&1 &
+# wrangler dev has been seen to exit with an empty "[ERROR]" on CI; restart it (and say so) rather than
+# failing every journey after it. Each restart is logged to wrangler-restarts.log and shown in the summary.
+(
+	while true; do
+		npx wrangler dev --port "$PORT" --ip 127.0.0.1 >> "$OUT/wrangler.log" 2>&1
+		echo "$(date -u +%H:%M:%S) wrangler dev exited with $?; restarting" | tee -a "$OUT/wrangler-restarts.log"
+		sleep 1
+	done
+) &
 for _ in $(seq 1 90); do
 	if curl -sf "http://127.0.0.1:$PORT/login" -o /dev/null; then
 		stamp "worker ready"

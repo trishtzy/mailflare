@@ -87,6 +87,30 @@ async function prepareDevice() {
 	return { chrome: chrome.replace("versionName=", ""), sdk };
 }
 
+/** The server answers on the host port (waits a while: a restarted wrangler dev takes a few seconds). */
+async function serverUp(timeout = 30_000) {
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		const res = await fetch(`http://127.0.0.1:${device.hostPort}/login`).catch(() => null);
+		if (res?.ok) return true;
+		await sleep(1_000);
+	}
+	return false;
+}
+
+/** Chrome's own tab activity in front (not the installed web app, the launcher or a dialog), with DevTools attached. */
+async function chromeInFront() {
+	await device.shell("cmd statusbar collapse");
+	const focus = await device.shell("dumpsys window 2>/dev/null | grep -m1 mCurrentFocus");
+	if (/ChromeTabbedActivity/.test(focus) && device.browser) return;
+	log(`  resetting Chrome (in front: ${focus.trim().replace(/^.*\{[^ ]+ u0 /, "").replace(/\}$/, "") || "nothing"})`);
+	await device.shell("am force-stop com.android.chrome");
+	await device.shell(`am start -a android.intent.action.VIEW -d '${APP}/login' com.android.chrome`);
+	device.browser = null;
+	await device.page({ timeout: 30_000 });
+	await device.singleTab();
+}
+
 async function runJourney(journey) {
 	const result = { id: journey.id, name: journey.name, steps: journey.actions.map((label) => ({ label, status: "skipped" })), error: null, durationMs: 0 };
 	const file = join(here, `${journey.id}.mjs`);
@@ -119,11 +143,13 @@ async function runJourney(journey) {
 	const ctx = { device, log, state: {} };
 	log(`▶ ${journey.id}`);
 	try {
-		// Nothing left over from the journey before: no Quick Settings, Chrome in front.
-		await device.shell("cmd statusbar collapse");
+		// Nothing left over from the journey before: the server up, no Quick Settings, a Chrome tab in front.
+		if (!(await serverUp())) throw new Error(`the server on host port ${device.hostPort} is not answering /login (see wrangler.log)`);
+		await chromeInFront();
 		if (script.setup) await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
 	} catch (error) {
 		result.error = `setup: ${error.message}`;
+		log(`  ❌ setup: ${error instanceof TypeError || error instanceof ReferenceError ? error.stack : error.message}`);
 		result.steps[0].status = "failed";
 		result.steps[0].error = result.error;
 		await capture(journey.id, "setup", result.steps[0]);

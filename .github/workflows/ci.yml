@@ -120,6 +120,10 @@ jobs:
       - name: Publish the summary
         if: always()
         run: |
+          cp ~/.config/.wrangler/logs/*.log journey-results/ 2>/dev/null || true
+          if [ -s journey-results/wrangler-restarts.log ]; then
+            { echo "> [!WARNING]"; echo "> wrangler dev exited and was restarted during this run:"; sed 's/^/> /' journey-results/wrangler-restarts.log; echo; } >> "$GITHUB_STEP_SUMMARY"
+          fi
           cat journey-results/summary-*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No journey summary was written; see the server log artifact." >> "$GITHUB_STEP_SUMMARY"
           tail -5 journey-results/server.log || true
 
