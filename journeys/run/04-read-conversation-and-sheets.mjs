@@ -13,7 +13,7 @@ const threadState = () => {
 	return { path: location.pathname, subject: subject && window.__j.shown(subject) ? window.__j.text(subject) : null };
 };
 
-export default {
+const journey = {
 	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
 	knownIssue: {
 		step: "Verify that the bottom panel is closed and the same conversation is still shown, with its subject heading visible",
@@ -101,3 +101,5 @@ export default {
 		],
 	],
 };
+
+export default journey;

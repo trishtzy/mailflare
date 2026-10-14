@@ -7,7 +7,7 @@ const banner = () => {
 
 const listed = (id) => [...document.querySelectorAll("li[data-row]")].some((row) => row.dataset.id === id && window.__j.visible(row));
 
-export default {
+const journey = {
 	async setup({ device }) {
 		await device.startSignedIn({ rows: 2 });
 		await device.ensureServiceWorker();
@@ -96,3 +96,5 @@ export default {
 		],
 	],
 };
+
+export default journey;

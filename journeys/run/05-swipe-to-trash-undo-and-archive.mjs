@@ -13,7 +13,7 @@ const toast = (text) => {
 
 const rowSwipe = (towards) => ({ from: towards === "left" ? [0.97, 0.5] : [0.03, 0.5], to: towards === "left" ? [0.03, 0.5] : [0.97, 0.5], ms: 350, screenEdge: true });
 
-export default {
+const journey = {
 	setup: ({ device }) => device.startSignedIn({ rows: 3 }),
 	steps: [
 		[
@@ -78,3 +78,5 @@ async function swipeUntilGone(device, id, towards) {
 		device.log("  the swipe did not take; swiping again");
 	}
 }
+
+export default journey;

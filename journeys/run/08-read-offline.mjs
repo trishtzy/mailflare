@@ -5,7 +5,7 @@ const banner = () => {
 	return el && window.__j.shown(el) ? window.__j.text(el) : null;
 };
 
-export default {
+const journey = {
 	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
 	knownIssue: {
 		step: "Verify that the \"Offline\" banner is no longer shown",
@@ -103,3 +103,5 @@ export default {
 		],
 	],
 };
+
+export default journey;

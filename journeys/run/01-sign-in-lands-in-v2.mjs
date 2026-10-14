@@ -1,6 +1,6 @@
 import { APP, LOGIN, expect } from "./harness.mjs";
 
-export default {
+const journey = {
 	async setup({ device }) {
 		await device.goto(`${APP}/login`);
 		await device.signOut();
@@ -82,3 +82,5 @@ export default {
 		],
 	],
 };
+
+export default journey;

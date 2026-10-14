@@ -11,7 +11,7 @@ const ABOVE_KEYBOARD = (selector) => {
 	return r.top >= visualViewport.offsetTop - 1 && r.bottom <= visibleBottom + 1 ? window.__j.text(el) : null;
 };
 
-export default {
+const journey = {
 	async setup({ device }) {
 		await device.startSignedIn();
 		// "Exactly one" in Sent: move sends left by an earlier run on this server to Trash.
@@ -118,3 +118,5 @@ export default {
 		],
 	],
 };
+
+export default journey;

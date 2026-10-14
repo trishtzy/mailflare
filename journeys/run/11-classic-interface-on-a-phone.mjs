@@ -11,7 +11,7 @@ const sidebarOpen = () => {
 	return r.left >= -1 && r.right > 40 && window.__j.visible(el);
 };
 
-export default {
+const journey = {
 	async setup({ device }) {
 		await device.startSignedIn();
 		// The classic inbox lists one mailbox (support@ unless another was picked): make sure it has mail.
@@ -142,3 +142,5 @@ export default {
 		],
 	],
 };
+
+export default journey;

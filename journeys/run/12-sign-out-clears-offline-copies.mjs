@@ -2,7 +2,7 @@ import { APP, expect } from "./harness.mjs";
 
 const URL_TEXT = "localhost:3000/v2/inbox";
 
-export default {
+const journey = {
 	async setup({ device, state }) {
 		await device.startSignedIn();
 		await device.ensureServiceWorker();
@@ -69,3 +69,5 @@ export default {
 		["Close Quick Settings", ({ device }) => device.closeQuickSettings()],
 	],
 };
+
+export default journey;

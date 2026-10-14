@@ -220,6 +220,25 @@ export class Device {
 		return true;
 	}
 
+	/** The mean colour of a screen rectangle, from a raw `screencap` (RGBA after a small header). */
+	async meanColour({ x1, y1, x2, y2 }) {
+		const raw = await this.adb("exec-out", "screencap");
+		const w = raw.readUInt32LE(0);
+		const h = raw.readUInt32LE(4);
+		const header = raw.length - w * h * 4;
+		let r = 0, g = 0, b = 0, n = 0;
+		for (let y = Math.max(0, y1); y < Math.min(h, y2); y++) {
+			for (let x = Math.max(0, x1); x < Math.min(w, x2); x++) {
+				const o = header + (y * w + x) * 4;
+				r += raw[o];
+				g += raw[o + 1];
+				b += raw[o + 2];
+				n++;
+			}
+		}
+		return { r: r / n, g: g / n, b: b / n };
+	}
+
 	// Native UI (Chrome menus and dialogs, the launcher) through uiautomator.
 	async nativeNodes() {
 		const xml = await this.shell("uiautomator dump /data/local/tmp/journey-ui.xml >/dev/null 2>&1; cat /data/local/tmp/journey-ui.xml; rm -f /data/local/tmp/journey-ui.xml");

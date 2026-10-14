@@ -4,7 +4,7 @@ const FOLDERS = ["Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Archive", "Al
 
 const listHeading = (device) => device.eval(() => [...document.querySelectorAll(".tb-title")].map((el) => window.__j.text(el)).find(Boolean) ?? null);
 
-export default {
+const journey = {
 	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
 	knownIssue: {
 		step: "Verify that the drawer is closed and the list heading still reads \"Sent\"",
@@ -65,3 +65,5 @@ async function waitDrawer(device, open) {
 	const { waitFor } = await import("./harness.mjs");
 	await waitFor(async () => (await device.drawerOpen().catch(() => false)) === open, { timeout: 5_000, message: `the drawer to be ${open ? "open" : "closed"}` });
 }
+
+export default journey;

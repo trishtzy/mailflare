@@ -1,6 +1,6 @@
 import { expect } from "./harness.mjs";
 
-export default {
+const journey = {
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
 		[
@@ -38,3 +38,5 @@ export default {
 		],
 	],
 };
+
+export default journey;

@@ -6,7 +6,7 @@ const pushItem = () => {
 	return el ? { label: window.__j.text(el.querySelector("[data-push-label]") ?? el), state: el.dataset.state, pressed: el.getAttribute("aria-pressed"), shown: window.__j.shown(el) } : null;
 };
 
-export default {
+const journey = {
 	async setup({ device }) {
 		await device.startSignedIn();
 		await device.ensureServiceWorker();
@@ -63,3 +63,5 @@ export default {
 		],
 	],
 };
+
+export default journey;
