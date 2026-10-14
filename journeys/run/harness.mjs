@@ -319,7 +319,7 @@ export class Device {
 				if (!res?.ok) return null;
 				return chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
 			},
-			{ timeout: 30_000, interval: 500, message: "Chrome DevTools on the device" },
+			{ timeout: 60_000, interval: 500, message: "Chrome DevTools on the device" },
 		);
 		this.browser.on("disconnected", () => {
 			this.browser = null;
