@@ -14,7 +14,7 @@ if [ -f "$OUT/server.failed" ]; then
 	echo "server setup failed"; tail -50 "$OUT/server.log" "$OUT/build.log" "$OUT/wrangler.log" 2>/dev/null; exit 1
 fi
 adb shell getprop ro.build.version.sdk
-adb shell dumpsys package com.android.chrome | grep -m1 versionName
+adb shell dumpsys package com.android.chrome 2>/dev/null | grep -m1 versionName
 adb shell wm size
 adb shell wm density
 node journeys/run/index.mjs --shard "$SHARD" --out "$OUT"

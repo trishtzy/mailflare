@@ -135,6 +135,11 @@ export class Device {
 
 	/** Types through the on-screen keyboard's input connection, as a person typing would. */
 	async type(text) {
+		// Typing with nothing focused would fire the app's keyboard shortcuts instead.
+		await this.until(() => {
+			const el = document.activeElement;
+			return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName));
+		}, null, { timeout: 5_000, message: "a text field to have focus before typing" });
 		const escaped = text.replace(/[\\'"`$&|;<>()*?#~!{}[\]]/g, (c) => `\\${c}`).replace(/ /g, "%s");
 		await this.shell(`input text '${escaped.replace(/'/g, "'\\''")}'`);
 	}
@@ -207,20 +212,32 @@ export class Device {
 		return this.browser ? this.browser.contexts().flatMap((c) => c.pages()) : [];
 	}
 
-	/** The Mailflare page in front: the one on localhost:3000 whose document is visible. */
+	/**
+	 * The Mailflare page in front. Chrome on Android can report background tabs as "visible", so the
+	 * front one is the page that is painting frames.
+	 */
 	async page({ timeout = 10_000 } = {}) {
 		return waitFor(
 			async () => {
 				if (!this.browser) await this.connect();
 				const candidates = this.pages().filter((p) => p.url().startsWith(APP));
-				for (const p of candidates.reverse()) {
-					const state = await p.evaluate(() => document.visibilityState).catch(() => null);
-					if (state === "visible") return p;
+				if (candidates.length <= 1) return candidates[0] ?? null;
+				const painting = [];
+				for (const p of candidates) {
+					const frame = await p.evaluate(() => Promise.race([new Promise((r) => requestAnimationFrame(() => r(document.visibilityState === "visible"))), new Promise((r) => setTimeout(() => r(false), 400))])).catch(() => false);
+					if (frame) painting.push(p);
 				}
-				return null;
+				return painting.at(-1) ?? null;
 			},
-			{ timeout, message: "a visible localhost:3000 page in Chrome" },
+			{ timeout, message: "a localhost:3000 page in front in Chrome" },
 		);
+	}
+
+	/** Closes every tab but the one in front, so later lookups are unambiguous. */
+	async singleTab() {
+		const front = await this.page();
+		for (const p of this.pages()) if (p !== front) await p.close().catch(() => {});
+		return front;
 	}
 
 	async eval(fn, arg, { page } = {}) {
@@ -234,6 +251,21 @@ export class Device {
 		return waitFor(() => this.eval(fn, arg), { timeout, message: message ?? String(fn) });
 	}
 
+	/** Waits until each text (exact string or RegExp) is shown on screen in an element matching `selector`. */
+	async see(texts, { selector = "*", timeout = 10_000, message } = {}) {
+		const list = (Array.isArray(texts) ? texts : [texts]).map(serialiseText);
+		return this.until(({ selector, list }) => {
+			const missing = list.filter((t) => !window.__j.byText(selector, t.source !== undefined ? new RegExp(t.source, t.flags) : t));
+			return missing.length === 0 || null;
+		}, { selector, list }, { timeout, message: message ?? `${list.map((t) => (t.source !== undefined ? `/${t.source}/` : `"${t}"`)).join(", ")} on screen` });
+	}
+
+	/** Waits until no element matching `selector` with that text is shown. */
+	async gone(text, { selector = "*", timeout = 10_000, message } = {}) {
+		const t = serialiseText(text);
+		return this.until(({ selector, t }) => !window.__j.byText(selector, t.source !== undefined ? new RegExp(t.source, t.flags) : t), { selector, t }, { timeout, message: message ?? `"${text}" to be gone from the screen` });
+	}
+
 	/**
 	 * Maps page CSS pixels to screen pixels. A calibration tap is swallowed in the capture phase, so it
 	 * reaches nothing in the app; it is repeated whenever the viewport changes (toolbar, keyboard, standalone).
@@ -244,15 +276,17 @@ export class Device {
 		if (known?.key === key) return known;
 		await page.evaluate(() => {
 			window.__jCal = new Promise((resolve) => {
-				const types = ["pointerdown", "pointerup", "pointercancel", "touchstart", "touchend", "mousedown", "mouseup", "click"];
+				// preventDefault on touchstart suppresses the mouse events and click, so touchend is the last event.
+				const types = ["pointerdown", "pointerup", "pointercancel", "touchstart", "touchend", "touchcancel", "mousedown", "mouseup", "click"];
+				let point = null;
 				const swallow = (event) => {
 					event.preventDefault();
 					event.stopImmediatePropagation();
-					if (event.type === "touchstart") {
-						const t = event.touches[0];
-						resolve({ clientX: t.clientX, clientY: t.clientY });
+					if (event.type === "touchstart") point = { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
+					if (event.type === "touchend" || event.type === "touchcancel") {
+						types.forEach((type) => removeEventListener(type, swallow, true));
+						resolve(point);
 					}
-					if (event.type === "click" || event.type === "touchend") setTimeout(() => types.forEach((type) => removeEventListener(type, swallow, true)), 400);
 				};
 				types.forEach((type) => addEventListener(type, swallow, { capture: true, passive: false }));
 			});
@@ -323,9 +357,29 @@ export class Device {
 			}, { capture: true, once: true });
 		});
 		await this.tapScreen(point.x, point.y);
-		const landed = await page.evaluate(() => window.__jTap).catch(() => undefined);
+		// The touch arrives a moment after `input tap` returns; a navigation it starts ends the check.
+		let landed;
+		for (let i = 0; i < 15 && !landed; i++) {
+			landed = await page.evaluate(() => window.__jTap).catch(() => undefined);
+			if (landed === undefined) break;
+			if (!landed) await sleep(100);
+		}
 		if (landed && !landed.hit) fail(`the tap meant for ${describeTarget(typeof target === "string" ? { selector: target } : target)} landed on ${landed.on}`);
 		return { page, box, point };
+	}
+
+	/** Taps a text field and waits for it to take focus, tapping once more if the first touch did not focus it. */
+	async focus(selector) {
+		for (let attempt = 1; ; attempt++) {
+			await this.tap(selector);
+			try {
+				await this.until((sel) => document.activeElement === document.querySelector(sel) || document.querySelector(sel)?.contains(document.activeElement), selector, { timeout: 3_000, message: `${selector} to take focus` });
+				return;
+			} catch (error) {
+				if (attempt >= 2) throw error;
+				this.log(`  ${selector} did not take focus; tapping again`);
+			}
+		}
 	}
 
 	/** Swipes across an element horizontally or vertically (fractions of its box), with a real touch. */
@@ -366,6 +420,29 @@ export class Device {
 		await page.context().clearCookies();
 	}
 
+	/** Signed in, online, on `path` (default the v2 inbox) with at least `rows` conversations in the inbox. */
+	async startSignedIn({ path = "/v2/inbox", rows = 1 } = {}) {
+		await this.goto(`${APP}/login`);
+		await this.signIn();
+		let page = await this.goto(`${APP}/v2/inbox`);
+		const count = await page.evaluate(() => document.querySelectorAll("li[data-row]").length);
+		if (count < rows) {
+			await this.deliverMail(rows - count);
+			page = await this.goto(`${APP}/v2/inbox`);
+		}
+		if (path !== "/v2/inbox") await this.goto(`${APP}${path}`);
+		await this.until(() => document.readyState === "complete" && !!document.querySelector("#main"), null, { message: `${path} to load` });
+	}
+
+	/** The v2 drawer: open when the body says so and the folder list is on screen. */
+	async drawerOpen() {
+		return this.eval(() => {
+			const nav = document.querySelector("#nav");
+			const r = nav.getBoundingClientRect();
+			return document.body.classList.contains("nav-open") && r.right > innerWidth / 2 && r.left >= -1 && window.__j.visible(nav);
+		});
+	}
+
 	/** Delivers mail through the Worker's email handler on the host, as the README does with curl. */
 	async deliverMail(count, prefix = "Journey mail") {
 		for (let i = 1; i <= count; i++) {
@@ -375,6 +452,10 @@ export class Device {
 			if (!res.ok) throw new Error(`mail delivery answered ${res.status}`);
 		}
 	}
+}
+
+function serialiseText(text) {
+	return text instanceof RegExp ? { source: text.source, flags: text.flags } : text;
 }
 
 function describeTarget(spec) {

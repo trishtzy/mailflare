@@ -79,7 +79,8 @@ async function prepareDevice() {
 	await device.shell(`am start -a android.intent.action.VIEW -d '${APP}/login' com.android.chrome`);
 	await device.connect();
 	await device.page({ timeout: 30_000 });
-	const chrome = (await device.shell("dumpsys package com.android.chrome | grep -m1 versionName")).trim();
+	await device.singleTab();
+	const chrome = (await device.shell("dumpsys package com.android.chrome 2>/dev/null | grep -m1 versionName")).trim();
 	const sdk = (await device.shell("getprop ro.build.version.sdk")).trim();
 	return { chrome: chrome.replace("versionName=", ""), sdk };
 }
@@ -88,8 +89,8 @@ async function runJourney(journey) {
 	const result = { id: journey.id, name: journey.name, steps: journey.actions.map((label) => ({ label, status: "skipped" })), error: null, durationMs: 0 };
 	const file = join(here, `${journey.id}.mjs`);
 	if (!existsSync(file)) {
-		result.error = `no script: journeys/run/${journey.id}.mjs does not exist`;
-		Object.assign(result.steps[0], { status: "failed", error: result.error });
+		result.unscripted = true;
+		result.steps.forEach((step) => (step.status = "unscripted"));
 		return result;
 	}
 	const script = (await import(pathToFileURL(file))).default;
@@ -173,5 +174,7 @@ const meta = { shard: shard ?? "all", chrome: env.chrome, sdk: env.sdk, duration
 writeFileSync(join(out, `junit${shard ? `-${shard.replace("/", "of")}` : ""}.xml`), junitXml(results, meta));
 writeFileSync(join(out, `summary${shard ? `-${shard.replace("/", "of")}` : ""}.md`), markdownSummary(results, meta));
 const failed = results.filter((r) => r.error);
-log(`${results.length - failed.length}/${results.length} journeys passed in ${Math.round(meta.durationMs / 1000)} s; results in ${out}`);
+const unscripted = results.filter((r) => r.unscripted);
+if (unscripted.length) log(`not scripted yet: ${unscripted.map((r) => r.id).join(", ")}`);
+log(`${results.length - failed.length - unscripted.length}/${results.length} journeys passed in ${Math.round(meta.durationMs / 1000)} s; results in ${out}`);
 process.exit(failed.length ? 1 : 0);

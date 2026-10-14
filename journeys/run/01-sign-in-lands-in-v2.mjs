@@ -19,8 +19,7 @@ export default {
 		[
 			'Tap the Email field and type "admin@example.com"',
 			async ({ device }) => {
-				await device.tap("input[type=email]");
-				await device.until(() => document.activeElement?.type === "email", null, { message: "the Email field to take focus" });
+				await device.focus("input[type=email]");
 				await device.type(LOGIN.email);
 				await device.until((value) => document.querySelector("input[type=email]").value === value, LOGIN.email, { message: `the Email field to read ${LOGIN.email}` });
 			},
@@ -28,8 +27,7 @@ export default {
 		[
 			'Tap the Password field and type "demo-password-change-me"',
 			async ({ device }) => {
-				await device.tap("input[type=password]");
-				await device.until(() => document.activeElement?.type === "password", null, { message: "the Password field to take focus" });
+				await device.focus("input[type=password]");
 				await device.type(LOGIN.password);
 				await device.until((length) => document.querySelector("input[type=password]").value.length === length, LOGIN.password.length, { message: "the Password field to hold the password" });
 			},
