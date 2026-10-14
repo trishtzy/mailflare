@@ -144,7 +144,7 @@ export function RichTextEditor({
 					onPaste={onPaste}
 					onKeyDown={onKeyDown}
 					className={cn(
-						"email-body max-w-none px-4 py-3 text-sm text-neutral-900 outline-none",
+						"email-body max-w-none px-4 py-3 text-sm text-neutral-900 outline-none max-md:text-base",
 						"min-h-32 empty:before:pointer-events-none empty:before:text-neutral-400 empty:before:content-[attr(data-placeholder)]",
 						disabled && "cursor-not-allowed opacity-60",
 					)}

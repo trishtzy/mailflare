@@ -31,10 +31,15 @@ export function SidebarProvider({ children, expandedWidth = 240 }: SidebarProvid
 	const [minimal, setMinimal] = useState(false);
 	const [storageKey, setStorageKey] = useState<string | null>(null);
 	const compact = useSyncExternalStore(subscribeCompact, getCompact, getServerCompact);
-	// The drawer stays open only on the page it was opened on, so following a link in it
-	// lands on the new page with the drawer closed.
-	const [drawerPath, setDrawerPath] = useState<string | null>(null);
-	const drawerOpen = compact && drawerPath === pathname;
+	const [drawerOpenState, setDrawerOpenState] = useState(false);
+	const drawerOpen = compact && drawerOpenState;
+	// Any navigation closes the drawer, including browser back/forward and swipe-back,
+	// so it never reappears when the user returns to the page it was opened on.
+	const [drawerPathname, setDrawerPathname] = useState(pathname);
+	if (drawerPathname !== pathname) {
+		setDrawerPathname(pathname);
+		setDrawerOpenState(false);
+	}
 
 	useEffect(() => {
 		// The sidebar preference is cosmetic, so every failure here degrades to the default.
@@ -62,7 +67,7 @@ export function SidebarProvider({ children, expandedWidth = 240 }: SidebarProvid
 	useEffect(() => {
 		if (!drawerOpen) return;
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setDrawerPath(null);
+			if (event.key === "Escape") setDrawerOpenState(false);
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
@@ -70,7 +75,7 @@ export function SidebarProvider({ children, expandedWidth = 240 }: SidebarProvid
 
 	function toggle() {
 		if (compact) {
-			setDrawerPath(null);
+			setDrawerOpenState(false);
 			return;
 		}
 		setMinimal((current) => {
@@ -85,8 +90,8 @@ export function SidebarProvider({ children, expandedWidth = 240 }: SidebarProvid
 		toggle,
 		compact,
 		drawerOpen,
-		openDrawer: () => setDrawerPath(pathname),
-		closeDrawer: () => setDrawerPath(null),
+		openDrawer: () => setDrawerOpenState(true),
+		closeDrawer: () => setDrawerOpenState(false),
 	};
 
 	return (
