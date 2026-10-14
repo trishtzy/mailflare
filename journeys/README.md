@@ -134,6 +134,7 @@ Push delivery is not a journey, because it needs mail sent from outside the devi
 | 11 | ✅ |
 | 12 | ✅ |
 | 14 | ✅ (added with the fix for #20) |
+| 16 | ✅ (added with the fix for #29) |
 
 With the fix for #19 (this branch, scripted, Android 16 emulator, Chrome 133, built Worker): 03 ✅ and 04 ✅ with their new Back steps, 05 ✅, 11 ✅.
 

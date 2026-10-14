@@ -1,6 +1,6 @@
 <journey name="Act on a conversation from its toolbar">
 	<description>
-		Start: the Mailflare v2 inbox is open and signed in, online, with at least three conversations in the list, and the service worker has stored the inbox page.
+		Start: the Mailflare v2 inbox is open and signed in, online, with three newly delivered conversations (none starred or snoozed) at the top of the list, and the service worker has stored the inbox page.
 		Inside a conversation on a phone, the toolbar and its Move and Snooze bottom sheets are the way to act on it. Each action must reach the server with the button that was tapped, online and when queued offline.
 	</description>
 	<actions>

@@ -1,4 +1,4 @@
-import { expect, waitFor } from "./harness.mjs";
+import { APP, expect, waitFor } from "./harness.mjs";
 
 // A bottom sheet: fixed to the bottom edge of the screen and on screen.
 const SHEET = (selector) => {
@@ -62,7 +62,17 @@ async function listedIn(device, view, label, row) {
 
 const journey = {
 	async setup({ device }) {
-		await device.startSignedIn({ rows: 3 });
+		await device.startSignedIn();
+		// Three conversations of its own at the top of the inbox, none starred or snoozed.
+		const prefix = `Toolbar ${Date.now().toString(36)}`;
+		await device.deliverMail(3, prefix);
+		await waitFor(async () => {
+			await device.goto(`${APP}/v2/inbox`);
+			return device.eval((prefix) => {
+				const subjects = [...document.querySelectorAll("li[data-row] .row-subject")].slice(0, 3).map((el) => el.textContent.trim());
+				return subjects.length === 3 && subjects.every((subject) => subject.startsWith(prefix));
+			}, prefix);
+		}, { timeout: 30_000, interval: 1_000, message: `the three "${prefix}" conversations at the top of the inbox` });
 		await device.ensureServiceWorker();
 	},
 	steps: [
