@@ -668,6 +668,31 @@ export const jmapChangeLog = sqliteTable(
 	],
 );
 
+/**
+ * A browser's Web Push subscription (migration 0036). `endpoint` is the push
+ * service URL the browser handed out; `p256dh` and `auth` are its message
+ * encryption keys, base64url as the PushSubscription JSON carries them.
+ */
+export const pushSubscriptions = sqliteTable(
+	"push_subscriptions",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		endpoint: text("endpoint").notNull().unique(),
+		p256dh: text("p256dh").notNull(),
+		auth: text("auth").notNull(),
+		userAgent: text("user_agent"),
+		createdAt: integer("created_at", { mode: "timestamp" })
+			.notNull()
+			.$defaultFn(() => new Date()),
+		lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
+		failedAt: integer("failed_at", { mode: "timestamp" }),
+	},
+	(t) => [index("push_subscriptions_user_idx").on(t.userId)],
+);
+
 export const schema = {
 	users,
 	domains,
@@ -696,4 +721,5 @@ export const schema = {
 	appSettings,
 	licenseSettings,
 	jmapChangeLog,
+	pushSubscriptions,
 };

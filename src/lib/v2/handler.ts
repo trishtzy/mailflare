@@ -7,6 +7,8 @@ import type { SessionUser } from "@/lib/auth/types";
 import type { AttachmentContent } from "@/lib/email/attachment-types";
 import { getMessageHeaderDetailsForUser } from "@/lib/email/message-headers";
 import { MessageActionError } from "@/lib/messages/actions";
+import { removePushSubscription, savePushSubscription } from "@/lib/push/delivery";
+import { getPushConfig, parsePushSubscription } from "@/lib/push/push-utils";
 import { html, type Html } from "./html";
 import { classicToV2, listHref, parseV2Path, safeReturnPath, v2ToClassic } from "./paths";
 import { UI_PREFERENCE_COOKIE } from "./preference";
@@ -136,6 +138,7 @@ function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, m
 		theme: theme === "light" || theme === "dark" ? theme : "system",
 		shortcutsEnabled: user.keyboardShortcutsEnabled !== false,
 		htmx: request.headers.get("hx-request") === "true",
+		vapidPublicKey: getPushConfig(env)?.publicKey ?? null,
 	};
 }
 
@@ -361,6 +364,41 @@ async function findMessage(ctx: V2Context, messageId: string) {
 }
 
 /**
+ * POST /v2/push/subscribe and /v2/push/unsubscribe take the browser's
+ * PushSubscription JSON (unsubscribe needs only `endpoint`) and bind it to,
+ * or remove it from, the signed-in user.
+ */
+async function handlePush(ctx: V2Context, name: string): Promise<Response> {
+	if (name !== "push/subscribe" && name !== "push/unsubscribe") return htmlResponse("Not found", { status: 404 });
+	const text = await ctx.request.text();
+	if (text.length > 8192) return jsonResponse({ error: "Subscription is too large." }, 413);
+	let body: unknown;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		return jsonResponse({ error: "Expected a PushSubscription as JSON." }, 400);
+	}
+	if (name === "push/unsubscribe") {
+		const endpoint = (body as { endpoint?: unknown } | null)?.endpoint;
+		if (typeof endpoint !== "string" || !endpoint) return jsonResponse({ error: "Missing endpoint." }, 400);
+		// Stored endpoints are normalised by parsePushSubscription; match the same form.
+		let normalized = endpoint;
+		try {
+			normalized = new URL(endpoint).href;
+		} catch {
+			// Not a URL: nothing stored can match, and deleting nothing is fine.
+		}
+		await removePushSubscription(ctx.env, ctx.user.id, normalized);
+		return jsonResponse({ ok: true });
+	}
+	if (!ctx.vapidPublicKey) return jsonResponse({ error: "Push notifications are not configured on this server." }, 409);
+	const subscription = parsePushSubscription(body);
+	if (!subscription) return jsonResponse({ error: "That push subscription is not valid." }, 422);
+	await savePushSubscription(ctx.env, ctx.user.id, subscription, ctx.request.headers.get("user-agent"));
+	return jsonResponse({ ok: true });
+}
+
+/**
  * Entry point for /v2. Pages are GETs that render HTML; actions are same-origin
  * POSTs that answer with the page to show next (htmx swaps #main) or redirect
  * when script is off.
@@ -455,6 +493,7 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 	}
 
 	if (method !== "POST") return htmlResponse("Method not allowed", { status: 405 });
+	if (route.kind === "action" && route.name.startsWith("push/")) return handlePush(ctx, route.name);
 	const form = await request.formData();
 	const name = route.kind === "action" ? route.name : "";
 	switch (name) {
