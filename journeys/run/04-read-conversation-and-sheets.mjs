@@ -14,6 +14,8 @@ const threadState = () => {
 };
 
 export default {
+	// Still fails on main; shown next to the failure in the summary, never used to skip or pass it.
+	knownIssue: "#19: Back with a bottom sheet open leaves the conversation",
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
 		[

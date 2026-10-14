@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs the scripted journeys against an Android emulator or device. See ../README.md.
 //
-//   node journeys/run/index.mjs [--shard 1/3] [--out dir] [--keep-chrome-data] [01 05 ...]
+//   node journeys/run/index.mjs [--shard 1/3] [--out dir] [--keep-chrome-data] [--allow-unscripted] [01 05 ...]
 //
 // Environment: ANDROID_SERIAL (which device), MAILFLARE_HOST_PORT (the host port the device's
 // localhost:3000 is reversed to, default 3000), CDP_PORT (host port for Chrome DevTools, default 9222).
@@ -29,6 +29,8 @@ const flag = (name) => {
 const shard = option("--shard");
 const out = option("--out") ?? join(journeysDir, "..", "journey-results");
 const keepChromeData = flag("--keep-chrome-data");
+// Journeys without a script fail the run unless this is given (CI passes it only for draft pull requests).
+const allowUnscripted = flag("--allow-unscripted");
 const only = args;
 
 const STEP_TIMEOUT = 60_000;
@@ -94,6 +96,7 @@ async function runJourney(journey) {
 		return result;
 	}
 	const script = (await import(pathToFileURL(file))).default;
+	result.knownIssue = script.knownIssue;
 	const labels = script.steps.map(([label]) => label);
 	const mismatch = journey.actions.findIndex((action, i) => labels[i] !== action);
 	if (mismatch >= 0 || labels.length !== journey.actions.length) {
@@ -108,6 +111,8 @@ async function runJourney(journey) {
 	const ctx = { device, log, state: {} };
 	log(`▶ ${journey.id}`);
 	try {
+		// Nothing left over from the journey before: no Quick Settings, Chrome in front.
+		await device.shell("cmd statusbar collapse");
 		if (script.setup) await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
 	} catch (error) {
 		result.error = `setup: ${error.message}`;
@@ -177,4 +182,4 @@ const failed = results.filter((r) => r.error);
 const unscripted = results.filter((r) => r.unscripted);
 if (unscripted.length) log(`not scripted yet: ${unscripted.map((r) => r.id).join(", ")}`);
 log(`${results.length - failed.length - unscripted.length}/${results.length} journeys passed in ${Math.round(meta.durationMs / 1000)} s; results in ${out}`);
-process.exit(failed.length ? 1 : 0);
+process.exit(failed.length || (unscripted.length && !allowUnscripted) ? 1 : 0);

@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -114,7 +115,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: bash journeys/ci/run-shard.sh ${{ matrix.shard }}/3
+          script: bash journeys/ci/run-shard.sh ${{ matrix.shard }}/3 ${{ github.event.pull_request.draft && '--allow-unscripted' || '' }}
 
       - name: Publish the summary
         if: always()

@@ -40,7 +40,8 @@ export function markdownSummary(results, meta = {}) {
 	lines.push("| Journey | Result |", "|---|---|");
 	for (const r of results) {
 		const failedStep = r.steps.findIndex((s) => s.status === "failed");
-		const detail = r.unscripted ? "🚧 not scripted yet" : r.error ? `❌ action ${failedStep + 1}: ${oneLine(r.error)}` : "✅";
+		const known = r.knownIssue ? ` (known: ${r.knownIssue})` : "";
+		const detail = r.unscripted ? "🚧 not scripted yet" : r.error ? `❌ action ${failedStep + 1}: ${oneLine(r.error)}${known}` : `✅${r.knownIssue ? ` (known issue no longer reproduces: ${r.knownIssue})` : ""}`;
 		lines.push(`| ${r.id} | ${detail.replace(/\|/g, "\\|")} |`);
 	}
 	for (const r of results) {

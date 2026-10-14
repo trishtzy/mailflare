@@ -53,8 +53,8 @@ export default {
 		[
 			'Tap the menu button at the top left of the screen and tap "Archive" in the drawer',
 			async ({ device }) => {
-				await device.tap("[data-nav-toggle]");
-				await device.tap({ selector: "#nav .nav-item", text: "Archive" });
+				await device.openDrawer();
+				await device.tap({ selector: "#nav .nav-label", text: "Archive" });
 			},
 		],
 		[

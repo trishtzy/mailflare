@@ -5,6 +5,8 @@ const FOLDERS = ["Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Archive", "Al
 const listHeading = (device) => device.eval(() => [...document.querySelectorAll(".tb-title")].map((el) => window.__j.text(el)).find(Boolean) ?? null);
 
 export default {
+	// Still fails on main; shown next to the failure in the summary, never used to skip or pass it.
+	knownIssue: "Back with the drawer open does not just close the drawer (pre-existing, see journeys/README.md)",
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
 		["Tap the menu button (three horizontal lines) at the top left of the screen", ({ device }) => device.tap("[data-nav-toggle]")],
@@ -27,7 +29,7 @@ export default {
 		],
 		[
 			'Tap "Sent" in the drawer',
-			({ device }) => device.tap({ selector: "#nav .nav-item", text: "Sent" }),
+			({ device }) => device.tap({ selector: "#nav .nav-label", text: "Sent" }),
 		],
 		[
 			'Verify that the drawer is closed and the list heading reads "Sent"',
@@ -37,7 +39,7 @@ export default {
 			},
 		],
 		["Tap the menu button at the top left of the screen to open the drawer again", async ({ device }) => {
-			await device.tap("[data-nav-toggle]");
+			await device.openDrawer();
 			await waitDrawer(device, true);
 		}],
 		["Press the Android Back button once", ({ device }) => device.back()],

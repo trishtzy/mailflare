@@ -2,7 +2,8 @@
 # Runs inside android-emulator-runner (one command, since its `script` runs each line separately):
 # waits for journeys/ci/server.sh, prints what device CI got, then runs one shard of the journeys.
 set -uo pipefail
-SHARD="${1:?usage: run-shard.sh k/n}"
+SHARD="${1:?usage: run-shard.sh k/n [runner flags]}"
+shift
 OUT="${OUT:-journey-results}"
 t0=$SECONDS
 until [ -f "$OUT/server.ready" ] || [ -f "$OUT/server.failed" ]; do
@@ -17,4 +18,4 @@ adb shell getprop ro.build.version.sdk
 adb shell dumpsys package com.android.chrome 2>/dev/null | grep -m1 versionName
 adb shell wm size
 adb shell wm density
-node journeys/run/index.mjs --shard "$SHARD" --out "$OUT"
+node journeys/run/index.mjs --shard "$SHARD" --out "$OUT" "$@"

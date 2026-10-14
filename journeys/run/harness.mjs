@@ -164,9 +164,62 @@ export class Device {
 		}
 	}
 
+	async airplaneMode() {
+		return (await this.shell("settings get global airplane_mode_on")).trim() === "1";
+	}
+
+	/**
+	 * Opens the full Quick Settings panel. Stands in for "swipe down from the very top edge twice": an
+	 * `input swipe` that starts on the status bar is not reliably taken as the shade gesture, and the
+	 * journeys are about the app, not the gesture. The Airplane mode tile itself is still tapped.
+	 */
+	async openQuickSettings() {
+		await this.shell("cmd statusbar expand-settings");
+		await waitFor(() => this.shadeOpen(), { timeout: 3_000, message: "Quick Settings to open" });
+		await sleep(500);
+	}
+
+	/** Whether the notification shade / Quick Settings window is drawn (focus alone can move back to the app first). */
+	async shadeOpen() {
+		const windows = await this.shell("dumpsys window windows");
+		const start = windows.search(/Window #\d+ Window\{[^}]*NotificationShade\}:/);
+		if (start < 0) return false;
+		const next = windows.slice(start + 1).search(/\n\s*Window #\d+ /);
+		return /isVisible=true/.test(windows.slice(start, next < 0 ? undefined : start + 1 + next));
+	}
+
+	/** Back closes Quick Settings; a second press covers a Back that arrives while the panel is still settling. */
+	async closeQuickSettings() {
+		for (let attempt = 1; ; attempt++) {
+			await this.back();
+			const closed = await waitFor(async () => !(await this.shadeOpen()), { timeout: 2_500, message: "Quick Settings to close" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+			if (closed) return;
+		}
+	}
+
+	/**
+	 * Taps the Airplane mode tile in the open Quick Settings panel. Turning it on also drops the adb
+	 * reverse tunnel first (Airplane mode does not cut it); turning it off restores the tunnel.
+	 */
+	async tapAirplaneTile(on) {
+		if (on) await this.adb("reverse", "--remove", "tcp:3000").catch(() => {});
+		for (let attempt = 1; ; attempt++) {
+			// The tile does not move within a run, so only the first toggle pays for a uiautomator dump.
+			if (!this.airplaneTile || attempt > 1) {
+				const isTile = (n) => n.clickable && /^Airplane mode/.test(n.desc || n.text);
+				const node = await this.findNative(isTile, { message: "the Airplane mode tile in Quick Settings" });
+				this.airplaneTile = { x: (node.bounds.x1 + node.bounds.x2) / 2, y: (node.bounds.y1 + node.bounds.y2) / 2 };
+			}
+			await this.tapScreen(this.airplaneTile.x, this.airplaneTile.y);
+			const done = await waitFor(async () => (await this.airplaneMode()) === on, { timeout: 4_000, message: `Airplane mode to turn ${on ? "on" : "off"}` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+			if (done) break;
+		}
+		if (!on) await this.adb("reverse", "tcp:3000", `tcp:${this.hostPort}`);
+	}
+
 	// Native UI (Chrome menus and dialogs, the launcher) through uiautomator.
 	async nativeNodes() {
-		const xml = await this.shell("uiautomator dump /dev/tty 2>/dev/null");
+		const xml = await this.shell("uiautomator dump /data/local/tmp/journey-ui.xml >/dev/null 2>&1; cat /data/local/tmp/journey-ui.xml; rm -f /data/local/tmp/journey-ui.xml");
 		return [...xml.matchAll(/<node ([^>]*?)\/?>/g)].map(([, attrs]) => {
 			const get = (name) => attrs.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? "";
 			const b = get("bounds").match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
@@ -436,6 +489,17 @@ export class Device {
 		await this.until(() => document.readyState === "complete" && !!document.querySelector("#main"), null, { message: `${path} to load` });
 	}
 
+	/** A service worker registered by an earlier visit and controlling the page, as the offline journeys start. */
+	async ensureServiceWorker() {
+		let page = await this.page();
+		await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+		if (!(await page.evaluate(() => !!navigator.serviceWorker.controller))) {
+			await page.reload({ waitUntil: "load" });
+			page = await this.page();
+		}
+		await this.until(() => !!navigator.serviceWorker.controller, null, { message: "the service worker to control the page" });
+	}
+
 	/** The v2 drawer: open when the body says so and the folder list is on screen. */
 	async drawerOpen() {
 		return this.eval(() => {
@@ -443,6 +507,16 @@ export class Device {
 			const r = nav.getBoundingClientRect();
 			return document.body.classList.contains("nav-open") && r.right > innerWidth / 2 && r.left >= -1 && window.__j.visible(nav);
 		});
+	}
+
+	/** Taps the menu button and waits for the drawer; one more tap if the first touch was dropped (as after Quick Settings closes). */
+	async openDrawer() {
+		for (let attempt = 1; ; attempt++) {
+			await this.tap("[data-nav-toggle]");
+			const open = await waitFor(() => this.drawerOpen(), { timeout: 2_500, message: "the drawer to open" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+			if (open) return;
+			this.log("  the drawer did not open; tapping the menu button again");
+		}
 	}
 
 	/** Delivers mail through the Worker's email handler on the host, as the README does with curl. */
