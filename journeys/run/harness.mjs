@@ -188,11 +188,11 @@ export class Device {
 		return /isVisible=true/.test(windows.slice(start, next < 0 ? undefined : start + 1 + next));
 	}
 
-	/** Back closes Quick Settings; a second press covers a Back that arrives while the panel is still settling. */
+	/** Back closes Quick Settings; further presses cover a Back that arrives while the panel is still settling. */
 	async closeQuickSettings() {
 		for (let attempt = 1; ; attempt++) {
 			await this.back();
-			const closed = await waitFor(async () => !(await this.shadeOpen()), { timeout: 2_500, message: "Quick Settings to close" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+			const closed = await waitFor(async () => !(await this.shadeOpen()), { timeout: 3_000, message: "Quick Settings to close" }).catch((error) => (attempt >= 3 ? Promise.reject(error) : false));
 			if (closed) return;
 		}
 	}

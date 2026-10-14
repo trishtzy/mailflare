@@ -1,7 +1,9 @@
-import { expect } from "./harness.mjs";
+import { APP, expect, waitFor } from "./harness.mjs";
 
 const fitsWidth = () => document.documentElement.scrollWidth <= innerWidth;
-const rowSelector = 'a[href^="/inbox/msg_"]';
+// A classic row's link is display: contents, so the row is the link's parent.
+const rowSelector = '*:has(> a[href^="/inbox/msg_"])';
+const hasRows = (sel) => [...document.querySelectorAll(sel)].some(window.__j.shown);
 const sidebarOpen = () => {
 	const el = document.querySelector("#app-sidebar");
 	if (!el) return false;
@@ -10,7 +12,21 @@ const sidebarOpen = () => {
 };
 
 export default {
-	setup: ({ device }) => device.startSignedIn(),
+	async setup({ device }) {
+		await device.startSignedIn();
+		// The classic inbox lists one mailbox (support@ unless another was picked): make sure it has mail.
+		await device.goto(`${APP}/inbox`);
+		const listed = await waitFor(() => device.eval(hasRows, rowSelector), { timeout: 8_000, message: "classic rows" }).catch(() => false);
+		if (!listed) {
+			await device.deliverMail(1, "Classic journey mail");
+			await waitFor(async () => {
+				await device.goto(`${APP}/inbox`);
+				return waitFor(() => device.eval(hasRows, rowSelector), { timeout: 4_000, message: "classic rows" }).catch(() => false);
+			}, { timeout: 30_000, interval: 500, message: "the delivered mail in the classic inbox" });
+		}
+		await device.goto(`${APP}/v2/inbox`);
+		await device.settle();
+	},
 	steps: [
 		[
 			'Tap the menu button at the top left of the screen and tap "Switch to classic" at the bottom of the drawer',
@@ -42,7 +58,7 @@ export default {
 		[
 			"Tap the first message row",
 			async ({ device, state }) => {
-				state.href = await device.eval((sel) => [...document.querySelectorAll(sel)].find(window.__j.shown).getAttribute("href"), rowSelector);
+				state.href = await device.eval((sel) => [...document.querySelectorAll(sel)].find(window.__j.shown).querySelector(":scope > a").getAttribute("href"), rowSelector);
 				await device.tap(rowSelector, { effect: (href) => location.pathname === href, arg: state.href, effectTimeout: 10_000 });
 			},
 		],
@@ -90,8 +106,8 @@ export default {
 		[
 			'Tap the round account avatar at the top right of the screen and tap "Settings" in the menu that opens',
 			async ({ device }) => {
-				await device.tap('button[aria-label="Open account menu"]', { effect: () => [...document.querySelectorAll('[role="menuitem"], a')].some((el) => window.__j.shown(el) && window.__j.text(el) === "Settings") });
-				await device.tap({ selector: '[role="menuitem"], [role="menu"] a', text: "Settings" }, { effect: () => location.pathname.startsWith("/settings"), effectTimeout: 15_000 });
+				await device.tap('button[aria-label="Open account menu"]', { effect: () => [...document.querySelectorAll("a, button")].some((el) => window.__j.shown(el) && window.__j.text(el) === "Settings") });
+				await device.tap({ selector: "a, button", text: "Settings" }, { effect: () => location.pathname.startsWith("/settings"), effectTimeout: 15_000 });
 				await device.settle();
 			},
 		],

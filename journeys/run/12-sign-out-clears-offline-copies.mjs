@@ -1,4 +1,4 @@
-import { APP, expect, fail, waitFor } from "./harness.mjs";
+import { APP, expect } from "./harness.mjs";
 
 const URL_TEXT = "localhost:3000/v2/inbox";
 
@@ -46,21 +46,9 @@ export default {
 			'Close Quick Settings, tap Chrome\'s address bar, type "localhost:3000/v2/inbox" and press Enter',
 			async ({ device }) => {
 				await device.closeQuickSettings();
-				const bar = (n) => n.pkg === "com.android.chrome" && /url_bar|search_box_text/.test(n.id);
-				for (let attempt = 1; ; attempt++) {
-					await device.tapNative(bar, { message: "Chrome's address bar" });
-					const editing = await device.findNative((n) => bar(n) && n.focused, { timeout: 3_000, message: "the address bar to take focus" }).catch(() => null);
-					if (!editing && attempt < 2) continue;
-					// The address bar selects its URL on focus, so typing replaces it.
-					await device.shell("input keyevent 123 67");
-					await device.type(URL_TEXT);
-					const typed = await waitFor(async () => (await device.nativeNodes()).find((n) => bar(n) && n.text.startsWith(URL_TEXT)), { timeout: 3_000, message: "the address bar to hold the URL" }).catch(() => null);
-					if (typed) break;
-					if (attempt >= 2) fail(`the address bar did not take "${URL_TEXT}"`);
-					device.log("  the address bar did not get the whole URL; typing it again");
-					await device.shell(`input keyevent 123 ${"67 ".repeat(60)}`);
-				}
-				await device.enter();
+				// Stands in for typing into the address bar: `input text` drops characters in Chrome's omnibox and
+				// turns the URL into a search (journeys/README.md). A VIEW intent for the URL is the same navigation.
+				await device.shell(`am start -a android.intent.action.VIEW -d 'http://${URL_TEXT}' com.android.chrome`);
 			},
 		],
 		[
