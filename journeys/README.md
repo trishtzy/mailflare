@@ -19,6 +19,7 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `13-compose-offline-sends-once` | Composer from the offline cache (stored ahead by the warm-up, never opened online), send queued, delivered exactly once on reconnect with no draft left |
 | `14-saved-copy-recovers-when-the-server-returns` | Server out of reach while the device is online: saved copy, "Couldn't reach Mailflare", recovery |
 | `15-discard-offline-draft` | Drafts discarded offline (one only on the device, one the server had) stay gone on reconnect |
+| `16-act-inside-a-conversation` | Toolbar Move → Archive, Star and Snooze → Next week from inside a conversation, each checked in its view; Move → Archive queued offline and applied on reconnect |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.
 
