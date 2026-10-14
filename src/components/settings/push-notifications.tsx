@@ -65,7 +65,7 @@ export function PushNotificationsSettings() {
 			if (existing && existingKey && bytesToBase64Url(existingKey) !== publicKey) await existing.unsubscribe();
 			const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) });
 			try {
-				await postPushSubscription("/v2/push/subscribe", subscription.toJSON());
+				await postPushSubscription("/v2/push/subscribe", { ...subscription.toJSON(), applicationServerKey: publicKey });
 			} catch (subscribeError) {
 				await subscription.unsubscribe().catch(() => false);
 				throw subscribeError;

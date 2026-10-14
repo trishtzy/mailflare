@@ -145,7 +145,9 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 			if (!publicKey) return;
 			subscription = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) });
 		}
-		await postSubscription("/v2/push/subscribe", subscription.toJSON());
+		const key = subscription.options && subscription.options.applicationServerKey;
+		const applicationServerKey = key ? btoa(String.fromCharCode(...new Uint8Array(key))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : undefined;
+		await postSubscription("/v2/push/subscribe", { ...subscription.toJSON(), applicationServerKey });
 		if (previous && previous.endpoint !== subscription.endpoint) await postSubscription("/v2/push/unsubscribe", { endpoint: previous.endpoint }).catch(() => {});
 	})());
 });

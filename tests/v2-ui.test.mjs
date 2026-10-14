@@ -312,9 +312,9 @@ test("with a VAPID key the body carries it and the sidebar has the notifications
 	assert.ok(!off.includes("data-push"));
 });
 
-test("the opt-in state: install first on iOS outside the app, blocked, off, on, and off again after a key change", () => {
+test("the opt-in state: install first on iOS outside the app, blocked, off, on, and off again after a key change or a sign-out", () => {
 	const key = "BKEY";
-	const env = { publicKey: key, supported: true, ios: false, standalone: false, permission: "granted", subscribedKey: key, subscribed: true };
+	const env = { publicKey: key, supported: true, ios: false, standalone: false, permission: "granted", subscribedKey: key, subscribed: true, registered: true };
 	assert.equal(v2.resolvePushControlState(env), "on");
 	assert.equal(v2.resolvePushControlState({ ...env, publicKey: null }), "unavailable");
 	assert.equal(v2.resolvePushControlState({ ...env, ios: true }), "install");
@@ -324,6 +324,10 @@ test("the opt-in state: install first on iOS outside the app, blocked, off, on, 
 	assert.equal(v2.resolvePushControlState({ ...env, permission: "default" }), "off");
 	assert.equal(v2.resolvePushControlState({ ...env, subscribed: false, subscribedKey: null }), "off");
 	assert.equal(v2.resolvePushControlState({ ...env, subscribedKey: "OLDKEY" }), "off");
+	// After a sign-out the server has no row: the browser's leftover subscription is not "on".
+	assert.equal(v2.resolvePushControlState({ ...env, registered: false }), "off");
+	// The check could not be made (offline): trust the browser.
+	assert.equal(v2.resolvePushControlState({ ...env, registered: null }), "on");
 });
 
 /** Runs public/sw.js against a fake ServiceWorkerGlobalScope and returns its listeners and spies. */

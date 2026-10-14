@@ -28,10 +28,12 @@ await build({
 			export { users, pushSubscriptions } from "./src/db/schema/index.ts";
 			export { assertBackupTablesCoverDatabase } from "./src/lib/backups/export.ts";
 			export * from "./src/lib/push/push-utils.ts";
-			export { savePushSubscription, removePushSubscription, countPushSubscriptions, enqueuePushNotifications, processPushMessage } from "./src/lib/push/delivery.ts";
+			export { savePushSubscription, removePushSubscription, countPushSubscriptions, isPushSubscriptionRegistered, enqueuePushNotifications, processPushMessage } from "./src/lib/push/delivery.ts";
+			export { createSession, deleteSession, deleteUserSessions, getSessionIdFromToken } from "./src/lib/auth/session.ts";
+			export { users as usersTable, sessions } from "./src/db/schema/index.ts";
 			export { derivePushKeys } from "./src/lib/push/encrypt-utils.ts";
 			export { base64UrlDecode, base64UrlEncode } from "./src/lib/push/encoding-utils.ts";
-			export { verifyVapidJwt } from "./src/lib/push/vapid-utils.ts";
+			export { vapidKeyId, verifyVapidJwt } from "./src/lib/push/vapid-utils.ts";
 			export { notifyUsersOfNewMessage } from "./src/lib/realtime/utils.ts";
 			export { isPushMessage, isWebhookRetryMessage, isInboundQueueMessage } from "./worker-utils.ts";
 			export { eq } from "drizzle-orm";
@@ -54,6 +56,19 @@ const m = await import(pathToFileURL(join(outDir, "entry.mjs")).href);
 let database;
 let db;
 let vapid;
+let currentKeyId;
+/** One signed-in session per user, recreated before every test: { token, id }. */
+let sessionOf = {};
+
+/** Stores a subscription as /v2/push/subscribe does: for the user's session, under the current key unless told otherwise. */
+function save(userId, input, userAgent = null, owner = {}) {
+	return m.savePushSubscription(
+		{ DB: database },
+		{ userId, sessionId: owner.sessionId ?? sessionOf[userId].id, vapidKeyId: owner.vapidKeyId ?? currentKeyId },
+		input,
+		userAgent,
+	);
+}
 
 async function newVapid() {
 	const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -126,15 +141,22 @@ before(async () => {
 		await db.insert(m.users).values({ id, email: `${id}@example.test`, passwordHash: "x", name: id });
 	}
 	vapid = await newVapid();
+	currentKeyId = await m.vapidKeyId(vapid.VAPID_PUBLIC_KEY);
 });
 
 beforeEach(async () => {
 	await db.delete(m.pushSubscriptions);
+	await db.delete(m.sessions);
+	sessionOf = {};
+	for (const userId of ["usr_a", "usr_b", "usr_c"]) {
+		const token = await m.createSession({ DB: database }, userId);
+		sessionOf[userId] = { token, id: await m.getSessionIdFromToken({ DB: database }, token) };
+	}
 });
 
 test("migration 0036 creates push_subscriptions and backups cover it", async () => {
 	const columns = database.db.prepare("PRAGMA table_info(push_subscriptions)").all().map((column) => column.name);
-	assert.deepEqual(columns, ["id", "user_id", "endpoint", "p256dh", "auth", "user_agent", "created_at", "last_used_at", "failed_at"]);
+	assert.deepEqual(columns, ["id", "user_id", "session_id", "vapid_key_id", "endpoint", "p256dh", "auth", "user_agent", "created_at", "last_used_at", "failed_at"]);
 	await m.assertBackupTablesCoverDatabase(database);
 });
 
@@ -210,13 +232,13 @@ test("subscribe upserts by endpoint, moves an endpoint to the user now signed in
 	const { env } = fakeEnv();
 	const browser = await newBrowser("https://fcm.googleapis.com/fcm/send/one");
 	const input = m.parsePushSubscription(browser.subscription);
-	await m.savePushSubscription(env, "usr_a", input, "UA 1");
-	await m.savePushSubscription(env, "usr_a", input, "UA 2");
+	await save("usr_a", input, "UA 1");
+	await save("usr_a", input, "UA 2");
 	let rows = await db.select().from(m.pushSubscriptions);
 	assert.equal(rows.length, 1);
 	assert.equal(rows[0].userAgent, "UA 2");
 
-	await m.savePushSubscription(env, "usr_b", input, "UA 3");
+	await save("usr_b", input, "UA 3");
 	rows = await db.select().from(m.pushSubscriptions);
 	assert.deepEqual(rows.map((row) => row.userId), ["usr_b"]);
 
@@ -227,9 +249,9 @@ test("subscribe upserts by endpoint, moves an endpoint to the user now signed in
 	assert.equal(await m.countPushSubscriptions(env), 0);
 
 	for (let index = 0; index < m.MAX_SUBSCRIPTIONS_PER_USER + 3; index += 1) {
-		await db.insert(m.pushSubscriptions).values({ id: `push_${index}`, userId: "usr_c", endpoint: `https://fcm.googleapis.com/fcm/send/${index}`, p256dh: input.p256dh, auth: input.auth, createdAt: new Date(1_700_000_000_000 + index * 1000) });
+		await db.insert(m.pushSubscriptions).values({ id: `push_${index}`, userId: "usr_c", sessionId: sessionOf.usr_c.id, vapidKeyId: currentKeyId, endpoint: `https://fcm.googleapis.com/fcm/send/${index}`, p256dh: input.p256dh, auth: input.auth, createdAt: new Date(1_700_000_000_000 + index * 1000) });
 	}
-	await m.savePushSubscription(env, "usr_c", m.parsePushSubscription((await newBrowser("https://fcm.googleapis.com/fcm/send/newest")).subscription), null);
+	await save("usr_c", m.parsePushSubscription((await newBrowser("https://fcm.googleapis.com/fcm/send/newest")).subscription), null);
 	rows = await db.select().from(m.pushSubscriptions).where(m.eq(m.pushSubscriptions.userId, "usr_c"));
 	assert.equal(rows.length, m.MAX_SUBSCRIPTIONS_PER_USER);
 	assert.ok(rows.some((row) => row.endpoint.endsWith("/newest")));
@@ -239,7 +261,7 @@ test("subscribe upserts by endpoint, moves an endpoint to the user now signed in
 test("producer suppresses the push for a user with an open socket and queues one job per other subscribed user", async () => {
 	const { env, queued } = fakeEnv({ usr_a: 1, usr_b: 0, usr_c: "error" });
 	for (const [userId, name] of [["usr_a", "a1"], ["usr_b", "b1"], ["usr_b", "b2"], ["usr_c", "c1"]]) {
-		await m.savePushSubscription(env, userId, m.parsePushSubscription((await newBrowser(`https://fcm.googleapis.com/fcm/send/${name}`)).subscription), null);
+		await save(userId, m.parsePushSubscription((await newBrowser(`https://fcm.googleapis.com/fcm/send/${name}`)).subscription), null);
 	}
 	const recipients = await m.enqueuePushNotifications(env, ["usr_a", "usr_b", "usr_c"], NOTICE);
 	assert.deepEqual(recipients.sort(), ["usr_b", "usr_c"]);
@@ -250,7 +272,7 @@ test("producer suppresses the push for a user with an open socket and queues one
 
 test("producer does nothing when push is not configured or nobody subscribed", async () => {
 	const { env, queued } = fakeEnv({}, { VAPID_PRIVATE_KEY: undefined });
-	await m.savePushSubscription(env, "usr_a", m.parsePushSubscription((await newBrowser("https://fcm.googleapis.com/fcm/send/x")).subscription), null);
+	await save("usr_a", m.parsePushSubscription((await newBrowser("https://fcm.googleapis.com/fcm/send/x")).subscription), null);
 	assert.deepEqual(await m.enqueuePushNotifications(env, ["usr_a"], NOTICE), []);
 	const configured = fakeEnv();
 	assert.deepEqual(await m.enqueuePushNotifications(configured.env, ["usr_b"], NOTICE), []);
@@ -260,7 +282,7 @@ test("producer does nothing when push is not configured or nobody subscribed", a
 test("notifyUsersOfNewMessage notifies every hub and queues pushes only for users without an open socket", async () => {
 	const { env, queued, notified } = fakeEnv({ usr_a: 1 });
 	for (const userId of ["usr_a", "usr_b"]) {
-		await m.savePushSubscription(env, userId, m.parsePushSubscription((await newBrowser(`https://fcm.googleapis.com/fcm/send/${userId}`)).subscription), null);
+		await save(userId, m.parsePushSubscription((await newBrowser(`https://fcm.googleapis.com/fcm/send/${userId}`)).subscription), null);
 	}
 	const payload = { type: "new_message", mailboxId: "mbx", ...NOTICE };
 	await m.notifyUsersOfNewMessage(env, ["usr_a", "usr_b"], payload);
@@ -306,9 +328,9 @@ test("consumer encrypts for each device; 201 stamps last_used_at, 410 deletes, 5
 	const browsers = {};
 	for (const name of ["ok", "gone", "busy", "forbidden"]) {
 		browsers[name] = await newBrowser(`https://push.example.net/${name}`);
-		await m.savePushSubscription(env, "usr_a", m.parsePushSubscription(browsers[name].subscription), null);
+		await save("usr_a", m.parsePushSubscription(browsers[name].subscription), null);
 	}
-	await m.savePushSubscription(env, "usr_b", m.parsePushSubscription((await newBrowser("https://push.example.net/other-user")).subscription), null);
+	await save("usr_b", m.parsePushSubscription((await newBrowser("https://push.example.net/other-user")).subscription), null);
 	const status = { ok: 201, gone: 410, busy: 503, forbidden: 403 };
 
 	const summary = await withPushService((url) => status[url.split("/").pop()], async (requests) => {
@@ -351,7 +373,7 @@ test("consumer encrypts for each device; 201 stamps last_used_at, 410 deletes, 5
 
 test("consumer gives up after the last attempt, survives network errors, and is a no-op once push is unconfigured", async () => {
 	const { env, queued } = fakeEnv();
-	await m.savePushSubscription(env, "usr_a", m.parsePushSubscription((await newBrowser("https://push.example.net/flaky")).subscription), null);
+	await save("usr_a", m.parsePushSubscription((await newBrowser("https://push.example.net/flaky")).subscription), null);
 	const [row] = await db.select().from(m.pushSubscriptions);
 
 	const original = globalThis.fetch;
@@ -373,4 +395,117 @@ test("consumer gives up after the last attempt, survives network errors, and is 
 
 	const unconfigured = fakeEnv({}, { VAPID_PUBLIC_KEY: undefined });
 	assert.deepEqual(await m.processPushMessage(unconfigured.env, { kind: "push.notify", userId: "usr_a", notification: NOTICE }), { delivered: 0, removed: 0, failed: 0, retried: 0 });
+});
+
+/** Counts what the push service is asked for while `run` executes; it would answer 201. */
+async function countingPushService(run) {
+	const urls = [];
+	const original = globalThis.fetch;
+	globalThis.fetch = async (input) => {
+		urls.push(new Request(input).url);
+		return new Response(null, { status: 201 });
+	};
+	try {
+		return { result: await run(), urls };
+	} finally {
+		globalThis.fetch = original;
+	}
+}
+
+test("vapidKeyId is a short stable name that differs between keys", async () => {
+	const other = await newVapid();
+	assert.equal(currentKeyId.length, 16);
+	assert.equal(await m.vapidKeyId(vapid.VAPID_PUBLIC_KEY), currentKeyId);
+	assert.equal(await m.vapidKeyId(` ${vapid.VAPID_PUBLIC_KEY}\n`), currentKeyId);
+	assert.notEqual(await m.vapidKeyId(other.VAPID_PUBLIC_KEY), currentKeyId);
+	assert.ok(!currentKeyId.includes(vapid.VAPID_PUBLIC_KEY.slice(0, 8)), "names the key without echoing it");
+});
+
+test("partitionSubscriptions keeps rows with a live session and the current key, and marks the rest dead", () => {
+	const now = new Date("2026-10-14T12:00:00Z");
+	const later = new Date("2026-10-20T12:00:00Z");
+	const rows = [
+		{ id: "live", vapidKeyId: "k1", sessionExpiresAt: later },
+		{ id: "signed-out", vapidKeyId: "k1", sessionExpiresAt: null },
+		{ id: "expired", vapidKeyId: "k1", sessionExpiresAt: new Date("2026-10-14T11:59:59Z") },
+		{ id: "old-key", vapidKeyId: "k0", sessionExpiresAt: later },
+	];
+	const { live, stale } = m.partitionSubscriptions(rows, { vapidKeyId: "k1", now });
+	assert.deepEqual(live.map((row) => row.id), ["live"]);
+	assert.deepEqual(stale.map((row) => row.id), ["signed-out", "expired", "old-key"]);
+});
+
+test("subscribing binds the row to the signed-in session; moving to another user moves the session too", async () => {
+	const input = m.parsePushSubscription((await newBrowser("https://fcm.googleapis.com/fcm/send/bound")).subscription);
+	await save("usr_a", input);
+	let [row] = await db.select().from(m.pushSubscriptions);
+	assert.equal(row.sessionId, sessionOf.usr_a.id);
+	assert.equal(row.vapidKeyId, currentKeyId);
+	assert.equal(await m.isPushSubscriptionRegistered({ DB: database }, "usr_a", input.endpoint), true);
+	await save("usr_b", input);
+	[row] = await db.select().from(m.pushSubscriptions);
+	assert.deepEqual([row.userId, row.sessionId], ["usr_b", sessionOf.usr_b.id]);
+	assert.equal(await m.isPushSubscriptionRegistered({ DB: database }, "usr_a", input.endpoint), false);
+	assert.equal(await m.getSessionIdFromToken({ DB: database }, "sess_not_a_real_token"), null);
+});
+
+test("signing out deletes that session's subscriptions, and a delivery afterwards sends nothing", async () => {
+	const { env, queued } = fakeEnv();
+	const input = m.parsePushSubscription((await newBrowser("https://push.example.net/phone")).subscription);
+	await save("usr_a", input);
+	await save("usr_b", m.parsePushSubscription((await newBrowser("https://push.example.net/other")).subscription));
+
+	await m.deleteSession({ DB: database }, sessionOf.usr_a.token);
+	assert.equal(await m.isPushSubscriptionRegistered(env, "usr_a", input.endpoint), false);
+	assert.deepEqual((await db.select().from(m.pushSubscriptions)).map((row) => row.userId), ["usr_b"]);
+
+	assert.deepEqual(await m.enqueuePushNotifications(env, ["usr_a"], NOTICE), []);
+	const { result, urls } = await countingPushService(() => m.processPushMessage(env, { kind: "push.notify", userId: "usr_a", notification: NOTICE }));
+	assert.deepEqual(result, { delivered: 0, removed: 0, failed: 0, retried: 0 });
+	assert.deepEqual(urls, []);
+	assert.equal(queued.length, 0);
+});
+
+test("signing out everywhere (password change) keeps only the session that asked", async () => {
+	const second = await m.createSession({ DB: database }, "usr_a");
+	const secondId = await m.getSessionIdFromToken({ DB: database }, second);
+	await save("usr_a", m.parsePushSubscription((await newBrowser("https://push.example.net/laptop")).subscription));
+	await save("usr_a", m.parsePushSubscription((await newBrowser("https://push.example.net/phone")).subscription), null, { sessionId: secondId });
+
+	await m.deleteUserSessions({ DB: database }, "usr_a", second);
+	assert.deepEqual((await db.select().from(m.pushSubscriptions)).map((row) => row.endpoint), ["https://push.example.net/phone"]);
+	await m.deleteUserSessions({ DB: database }, "usr_a");
+	assert.equal(await m.countPushSubscriptions({ DB: database }), 0);
+});
+
+test("a row whose session expired is deleted unsent and never queued", async () => {
+	const { env, queued } = fakeEnv();
+	await save("usr_a", m.parsePushSubscription((await newBrowser("https://push.example.net/stale")).subscription));
+	await db.update(m.sessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(m.eq(m.sessions.id, sessionOf.usr_a.id));
+
+	assert.deepEqual(await m.enqueuePushNotifications(env, ["usr_a"], NOTICE), []);
+	const { result, urls } = await countingPushService(() => m.processPushMessage(env, { kind: "push.notify", userId: "usr_a", notification: NOTICE }));
+	assert.deepEqual(result, { delivered: 0, removed: 1, failed: 0, retried: 0 });
+	assert.deepEqual(urls, []);
+	assert.equal(await m.countPushSubscriptions(env), 0);
+	assert.equal(queued.length, 0);
+});
+
+test("after a VAPID key change, rows made under the old key are deleted instead of failing with 403 on every message", async () => {
+	const { env } = fakeEnv();
+	const oldKeyId = await m.vapidKeyId((await newVapid()).VAPID_PUBLIC_KEY);
+	await save("usr_a", m.parsePushSubscription((await newBrowser("https://push.example.net/old-key")).subscription), null, { vapidKeyId: oldKeyId });
+	await save("usr_a", m.parsePushSubscription((await newBrowser("https://push.example.net/new-key")).subscription));
+	await save("usr_b", m.parsePushSubscription((await newBrowser("https://push.example.net/only-old")).subscription), null, { vapidKeyId: oldKeyId });
+
+	// The producer counts only subscriptions it could deliver to.
+	assert.deepEqual((await m.enqueuePushNotifications(env, ["usr_a", "usr_b"], NOTICE)).sort(), ["usr_a"]);
+
+	const { result, urls } = await countingPushService(() => m.processPushMessage(env, { kind: "push.notify", userId: "usr_a", notification: NOTICE }));
+	assert.deepEqual(result, { delivered: 1, removed: 1, failed: 0, retried: 0 });
+	assert.deepEqual(urls, ["https://push.example.net/new-key"]);
+	const second = await countingPushService(() => m.processPushMessage(env, { kind: "push.notify", userId: "usr_b", notification: NOTICE }));
+	assert.deepEqual(second.result, { delivered: 0, removed: 1, failed: 0, retried: 0 });
+	assert.deepEqual(second.urls, []);
+	assert.deepEqual((await db.select().from(m.pushSubscriptions)).map((row) => row.endpoint), ["https://push.example.net/new-key"]);
 });

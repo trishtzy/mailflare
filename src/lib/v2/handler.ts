@@ -2,13 +2,14 @@ import { and, eq, inArray, like, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { contacts } from "@/db/schema";
 import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
-import { getSessionTokenFromRequestHeaders, getUserFromSession } from "@/lib/auth/session";
+import { getSessionIdFromToken, getSessionTokenFromRequestHeaders, getUserFromSession } from "@/lib/auth/session";
 import type { SessionUser } from "@/lib/auth/types";
 import type { AttachmentContent } from "@/lib/email/attachment-types";
 import { getMessageHeaderDetailsForUser } from "@/lib/email/message-headers";
 import { MessageActionError } from "@/lib/messages/actions";
-import { removePushSubscription, savePushSubscription } from "@/lib/push/delivery";
+import { isPushSubscriptionRegistered, removePushSubscription, savePushSubscription } from "@/lib/push/delivery";
 import { getPushConfig, parsePushSubscription } from "@/lib/push/push-utils";
+import { vapidKeyId } from "@/lib/push/vapid-utils";
 import { html, type Html } from "./html";
 import { classicToV2, listHref, parseV2Path, safeReturnPath, v2ToClassic } from "./paths";
 import { UI_PREFERENCE_COOKIE } from "./preference";
@@ -363,13 +364,25 @@ async function findMessage(ctx: V2Context, messageId: string) {
 	return thread?.messages.find((message) => message.id === messageId) ?? null;
 }
 
+/** Stored endpoints are normalised by parsePushSubscription; match the same form. */
+function normalizeEndpoint(value: unknown): string | null {
+	if (typeof value !== "string" || !value) return null;
+	try {
+		return new URL(value).href;
+	} catch {
+		return value;
+	}
+}
+
 /**
- * POST /v2/push/subscribe and /v2/push/unsubscribe take the browser's
- * PushSubscription JSON (unsubscribe needs only `endpoint`) and bind it to,
- * or remove it from, the signed-in user.
+ * POST /v2/push/subscribe, /v2/push/unsubscribe and /v2/push/check take the
+ * browser's PushSubscription JSON (the last two need only `endpoint`).
+ * Subscribe binds the endpoint to the signed-in user and session and to the
+ * current VAPID key; check answers whether the server still pushes to it, which
+ * after a sign-out it does not.
  */
 async function handlePush(ctx: V2Context, name: string): Promise<Response> {
-	if (name !== "push/subscribe" && name !== "push/unsubscribe") return htmlResponse("Not found", { status: 404 });
+	if (name !== "push/subscribe" && name !== "push/unsubscribe" && name !== "push/check") return htmlResponse("Not found", { status: 404 });
 	const text = await ctx.request.text();
 	if (text.length > 8192) return jsonResponse({ error: "Subscription is too large." }, 413);
 	let body: unknown;
@@ -378,23 +391,29 @@ async function handlePush(ctx: V2Context, name: string): Promise<Response> {
 	} catch {
 		return jsonResponse({ error: "Expected a PushSubscription as JSON." }, 400);
 	}
-	if (name === "push/unsubscribe") {
-		const endpoint = (body as { endpoint?: unknown } | null)?.endpoint;
-		if (typeof endpoint !== "string" || !endpoint) return jsonResponse({ error: "Missing endpoint." }, 400);
-		// Stored endpoints are normalised by parsePushSubscription; match the same form.
-		let normalized = endpoint;
-		try {
-			normalized = new URL(endpoint).href;
-		} catch {
-			// Not a URL: nothing stored can match, and deleting nothing is fine.
-		}
-		await removePushSubscription(ctx.env, ctx.user.id, normalized);
+	const endpoint = normalizeEndpoint((body as { endpoint?: unknown } | null)?.endpoint);
+	if (name !== "push/subscribe") {
+		if (!endpoint) return jsonResponse({ error: "Missing endpoint." }, 400);
+		if (name === "push/check") return jsonResponse({ subscribed: !!ctx.vapidPublicKey && await isPushSubscriptionRegistered(ctx.env, ctx.user.id, endpoint) });
+		await removePushSubscription(ctx.env, ctx.user.id, endpoint);
 		return jsonResponse({ ok: true });
 	}
 	if (!ctx.vapidPublicKey) return jsonResponse({ error: "Push notifications are not configured on this server." }, 409);
+	// A page loaded before the key changed subscribes with the old one; the push service would refuse every message.
+	const subscribedWith = (body as { applicationServerKey?: unknown }).applicationServerKey;
+	if (typeof subscribedWith === "string" && subscribedWith.replace(/=+$/, "") !== ctx.vapidPublicKey) {
+		return jsonResponse({ error: "The server's notification key has changed. Reload the page and turn notifications on again." }, 409);
+	}
 	const subscription = parsePushSubscription(body);
 	if (!subscription) return jsonResponse({ error: "That push subscription is not valid." }, 422);
-	await savePushSubscription(ctx.env, ctx.user.id, subscription, ctx.request.headers.get("user-agent"));
+	const sessionId = await getSessionIdFromToken(ctx.env, getSessionTokenFromRequestHeaders(ctx.request));
+	if (!sessionId) return jsonResponse({ error: "Your session has ended. Sign in again." }, 401);
+	await savePushSubscription(
+		ctx.env,
+		{ userId: ctx.user.id, sessionId, vapidKeyId: await vapidKeyId(ctx.vapidPublicKey) },
+		subscription,
+		ctx.request.headers.get("user-agent"),
+	);
 	return jsonResponse({ ok: true });
 }
 

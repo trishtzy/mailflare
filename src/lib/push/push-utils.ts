@@ -99,6 +99,25 @@ export function pushRetryDelaySeconds(attempt: number): number {
 }
 
 /**
+ * Splits a user's subscriptions into those to push to and those that are
+ * dead: their session was signed out or expired (they would show a signed-out
+ * device the sender and subject), or the browser subscribed under another
+ * VAPID key (the push service would refuse every message with 403).
+ */
+export function partitionSubscriptions<T extends { vapidKeyId: string; sessionExpiresAt: Date | null }>(
+	rows: T[],
+	current: { vapidKeyId: string; now: Date },
+): { live: T[]; stale: T[] } {
+	const live: T[] = [];
+	const stale: T[] = [];
+	for (const row of rows) {
+		const sessionLive = row.sessionExpiresAt !== null && row.sessionExpiresAt.getTime() > current.now.getTime();
+		(sessionLive && row.vapidKeyId === current.vapidKeyId ? live : stale).push(row);
+	}
+	return { live, stale };
+}
+
+/**
  * Who gets a push for a new message: users with at least one subscription and
  * no open realtime socket. A user who is looking at the app already sees the
  * message arrive; a failed connection count counts as no socket, so a broken

@@ -98,7 +98,7 @@ npx wrangler secret put VAPID_PRIVATE_KEY
 npx wrangler secret put VAPID_SUBJECT
 ```
 
-Apply the database update from the admin overview (migration `0036_add_push_subscriptions`). The admin overview then shows **Push notifications: Configured** and how many devices are subscribed. Notifications carry only the sender and subject, are skipped while the user has Mailflare open, and ride the outbound queue, so inbound mail never waits on a push service. Changing the key pair invalidates every existing subscription; users turn notifications on again.
+Apply the database update from the admin overview (migration `0036_add_push_subscriptions`). The admin overview then shows **Push notifications: Configured** and how many devices are subscribed. Notifications carry only the sender and subject, are skipped while the user has Mailflare open, and ride the outbound queue, so inbound mail never waits on a push service. A subscription belongs to the session that turned it on, so signing out (or a password change or reset, which ends other sessions) stops notifications on that device. Changing the key pair invalidates every existing subscription: rows made under the old key are deleted on the next delivery instead of being retried, and users turn notifications on again.
 
 ## Updating Mailflare
 

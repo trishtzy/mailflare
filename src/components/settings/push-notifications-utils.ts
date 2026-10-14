@@ -8,6 +8,8 @@ export function resolvePushControlState(environment: PushEnvironment): PushContr
 	if (environment.permission === "denied") return "blocked";
 	if (!environment.subscribed || environment.permission !== "granted") return "off";
 	if (environment.subscribedKey && environment.subscribedKey !== environment.publicKey) return "off";
+	// Signing out removes the server's row; the browser's subscription alone is not "on".
+	if (environment.registered === false) return "off";
 	return "on";
 }
 
@@ -25,6 +27,21 @@ export async function loadPushKey(): Promise<PushKeyResponse> {
 	const response = await fetch("/v2/push/key", { cache: "no-store", headers: { Accept: "application/json" } });
 	if (!response.ok) throw new Error("Could not check notifications");
 	return (await response.json()) as PushKeyResponse;
+}
+
+/** Whether the server still pushes to `endpoint` for the signed-in user; null when it cannot say. */
+export async function checkPushSubscription(endpoint: string): Promise<boolean | null> {
+	try {
+		const response = await fetch("/v2/push/check", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Accept: "application/json" },
+			body: JSON.stringify({ endpoint }),
+		});
+		if (!response.ok) return null;
+		return ((await response.json()) as { subscribed?: unknown }).subscribed === true;
+	} catch {
+		return null;
+	}
 }
 
 export async function postPushSubscription(path: "/v2/push/subscribe" | "/v2/push/unsubscribe", value: unknown): Promise<void> {
@@ -62,6 +79,9 @@ export async function readPushEnvironment(publicKey: string | null): Promise<Pus
 	const registration = supported ? await navigator.serviceWorker.getRegistration("/v2/").catch(() => undefined) : undefined;
 	const subscription = registration ? await registration.pushManager.getSubscription().catch(() => null) : null;
 	const key = subscription?.options.applicationServerKey;
+	const registered = subscription ? await checkPushSubscription(subscription.endpoint) : null;
+	// The server forgot this endpoint (the user signed out): drop the browser's side too.
+	if (subscription && registered === false) await subscription.unsubscribe().catch(() => false);
 	return {
 		publicKey,
 		supported,
@@ -69,6 +89,7 @@ export async function readPushEnvironment(publicKey: string | null): Promise<Pus
 		standalone: window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true,
 		permission: "Notification" in window ? Notification.permission : null,
 		subscribedKey: key ? bytesToBase64Url(key) : null,
-		subscribed: !!subscription,
+		subscribed: !!subscription && registered !== false,
+		registered,
 	};
 }

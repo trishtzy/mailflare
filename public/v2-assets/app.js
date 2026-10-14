@@ -1150,6 +1150,22 @@
 		return registration ? registration.pushManager.getSubscription() : null;
 	}
 
+	/** Whether the server still pushes to this endpoint for whoever is signed in; null when it cannot say. */
+	async function serverHasSubscription(subscription) {
+		try {
+			const response = await fetch("/v2/push/check", {
+				method: "POST",
+				credentials: "same-origin",
+				headers: { "Content-Type": "application/json", Accept: "application/json" },
+				body: JSON.stringify({ endpoint: subscription.endpoint }),
+			});
+			if (!response.ok) return null;
+			return (await response.json()).subscribed === true;
+		} catch {
+			return null;
+		}
+	}
+
 	async function readPushState() {
 		const key = body.dataset.vapidKey;
 		if (!key) return "unsupported";
@@ -1161,6 +1177,12 @@
 		// A subscription made under an older server key can no longer be pushed to.
 		const subscribedKey = subscription.options?.applicationServerKey;
 		if (subscribedKey && bytesToBase64Url(subscribedKey) !== key) return "off";
+		// Signing out drops the server's row but not the browser's subscription:
+		// the next person to sign in here starts with notifications off.
+		if (await serverHasSubscription(subscription) === false) {
+			await subscription.unsubscribe().catch(() => {});
+			return "off";
+		}
 		return "on";
 	}
 
@@ -1179,7 +1201,7 @@
 			if (existing && existingKey && bytesToBase64Url(existingKey) !== key) await existing.unsubscribe();
 			const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(key) });
 			try {
-				await postJson("/v2/push/subscribe", subscription.toJSON());
+				await postJson("/v2/push/subscribe", { ...subscription.toJSON(), applicationServerKey: key });
 			} catch (error) {
 				await subscription.unsubscribe().catch(() => {});
 				throw error;
@@ -1219,15 +1241,7 @@
 	document.addEventListener("htmx:afterSettle", applyPushState);
 	document.addEventListener("htmx:oobAfterSwap", applyPushState);
 
-	readPushState().then(async (state) => {
-		setPushState(state);
-		// Re-register on load: it binds this browser's endpoint to whoever is
-		// signed in now and restores a row the server lost.
-		if (state === "on") {
-			const subscription = await currentSubscription();
-			if (subscription) postJson("/v2/push/subscribe", subscription.toJSON()).catch(() => {});
-		}
-	});
+	readPushState().then(setPushState);
 
 	// A notification click in the service worker opens its message here.
 	navigator.serviceWorker?.addEventListener("message", (event) => {

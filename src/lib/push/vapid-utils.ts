@@ -4,6 +4,15 @@ import type { PushConfig } from "./types";
 /** RFC 8292 §2: `exp` must be no more than 24 hours ahead. */
 export const VAPID_TOKEN_LIFETIME_SECONDS = 12 * 60 * 60;
 
+/**
+ * A short, stable name for a VAPID public key, stored on each subscription so
+ * rows made under an older key can be recognised after the key changes.
+ */
+export async function vapidKeyId(publicKey: string): Promise<string> {
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", utf8(publicKey.trim())));
+	return base64UrlEncode(digest).slice(0, 16);
+}
+
 /** The JWT audience is the push service's origin, not the full endpoint URL. */
 export function vapidAudience(endpoint: string): string {
 	return new URL(endpoint).origin;
