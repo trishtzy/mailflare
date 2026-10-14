@@ -36,14 +36,20 @@ stamp "built"
 # wrangler dev has been seen on CI to print an empty "[ERROR]" and stop answering without exiting.
 # Restart it when it exits, and kill it when /login fails three checks in a row, rather than failing
 # every journey after it. Each restart is logged to wrangler-restarts.log and shown in the job summary.
+# Both loops turn off errexit/pipefail inherited from above: a killed wrangler dev exits non-zero, and
+# that must lead to a restart, not end the loop.
 (
+	set +eo pipefail
+	trap - ERR
 	while true; do
-		npx wrangler dev --port "$PORT" --ip 127.0.0.1 >> "$OUT/wrangler.log" 2>&1
+		WRANGLER_LOG=debug npx wrangler dev --port "$PORT" --ip 127.0.0.1 >> "$OUT/wrangler.log" 2>&1
 		echo "$(date -u +%H:%M:%S) wrangler dev exited with $?; restarting" | tee -a "$OUT/wrangler-restarts.log"
 		sleep 1
 	done
 ) &
 (
+	set +eo pipefail
+	trap - ERR
 	until [ -f "$OUT/server.ready" ]; do sleep 2; done
 	misses=0
 	while true; do

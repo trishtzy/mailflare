@@ -69,8 +69,9 @@ const journey = {
 		[
 			'Verify that a "Mailflare" icon with a blue envelope is on the home screen; swipe left or open the app drawer to find it if it is not on the first page',
 			async ({ device, state }) => {
-				let icon = await device.findNative(homeIcon, { timeout: 4_000, message: "the Mailflare icon" }).catch(() => null);
-				for (let page = 0; !icon && page < 2; page++) {
+				// The launcher places a pinned shortcut a moment after confirming it.
+				let icon = await device.findNative(homeIcon, { timeout: 8_000, message: "the Mailflare icon" }).catch(() => null);
+				for (let page = 0; !icon && page < 3; page++) {
 					await device.swipeScreen(device.width * 0.85, device.height * 0.5, device.width * 0.15, device.height * 0.5, 300);
 					await sleep(600);
 					icon = await device.findNative(homeIcon, { timeout: 3_000, message: "the Mailflare icon" }).catch(() => null);
