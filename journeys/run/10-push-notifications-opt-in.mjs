@@ -3,7 +3,8 @@ import { APP, expect, waitFor } from "./harness.mjs";
 const toast = (text) => [...document.querySelectorAll("#toast .toast")].some((t) => window.__j.visible(t) && window.__j.text(t).includes(text));
 const pushItem = () => {
 	const el = document.querySelector("#nav [data-push]");
-	return el ? { label: window.__j.text(el.querySelector("[data-push-label]") ?? el), state: el.dataset.state, pressed: el.getAttribute("aria-pressed"), shown: window.__j.shown(el) } : null;
+	// Read-only check: on screen in the open drawer (a fixed, empty toast region can sit over it, so not "uncovered").
+	return el ? { label: window.__j.text(el.querySelector("[data-push-label]") ?? el), state: el.dataset.state, pressed: el.getAttribute("aria-pressed"), shown: window.__j.visible(el) && document.body.classList.contains("nav-open") } : null;
 };
 
 const journey = {

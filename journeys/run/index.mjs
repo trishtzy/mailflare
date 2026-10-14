@@ -3,8 +3,8 @@
 //
 //   node journeys/run/index.mjs [--shard 1/3] [--out dir] [--keep-chrome-data] [--allow-unscripted] [01 05 ...]
 //
-// Environment: ANDROID_SERIAL (which device), MAILFLARE_HOST_PORT (the host port the device's
-// localhost:3000 is reversed to, default 3000), CDP_PORT (host port for Chrome DevTools, default 9222).
+// Environment: ANDROID_SERIAL (which device), MAILFLARE_HOST_PORT (the host port the server listens on,
+// default 3000; the device's localhost:3000 reaches it through the runner's relay), CDP_PORT (host port for Chrome DevTools, default 9222).
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";

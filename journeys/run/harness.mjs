@@ -2,6 +2,7 @@
 // (adb `input` taps, swipes and key events, Quick Settings state through `cmd`); Chrome DevTools is
 // only used to wait for and assert on the page and to find where an element is on screen.
 import { execFile } from "node:child_process";
+import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 import { _android, chromium } from "playwright-core";
 
@@ -102,6 +103,41 @@ export class Device {
 		const size = (await this.shell("wm size")).match(/(\d+)x(\d+)\s*$/m);
 		this.width = Number(size[1]);
 		this.height = Number(size[2]);
+		await this.startRelay();
+		await this.adb("reverse", "tcp:3000", `tcp:${this.relayPort}`);
+	}
+
+	/**
+	 * The device's localhost:3000 reaches the server through this relay. Going offline closes every
+	 * connection through it and refuses new ones: Airplane mode does not touch the adb reverse tunnel,
+	 * and Chrome keeps connections alive, so removing the tunnel alone left pages able to reach the server.
+	 */
+	async startRelay() {
+		this.relayOffline = false;
+		this.relaySockets = new Set();
+		this.relay = createServer((client) => {
+			if (this.relayOffline) return client.destroy();
+			const upstream = createConnection({ host: "127.0.0.1", port: this.hostPort });
+			const pair = [client, upstream];
+			for (const socket of pair) {
+				this.relaySockets.add(socket);
+				socket.on("error", () => pair.forEach((s) => s.destroy()));
+				socket.on("close", () => {
+					this.relaySockets.delete(socket);
+					pair.forEach((s) => s.destroy());
+				});
+			}
+			client.pipe(upstream);
+			upstream.pipe(client);
+		});
+		await new Promise((resolve) => this.relay.listen(0, "127.0.0.1", resolve));
+		this.relay.unref();
+		this.relayPort = this.relay.address().port;
+	}
+
+	setRelayOffline(offline) {
+		this.relayOffline = offline;
+		if (offline) for (const socket of this.relaySockets) socket.destroy();
 	}
 
 	async adb(...args) {
@@ -153,14 +189,13 @@ export class Device {
 		return /mInputShown=true/.test(out);
 	}
 
-	/** Device offline the way the journeys mean it: Airplane mode, plus dropping the adb reverse tunnel, which Airplane mode does not cut. */
+	/** Device offline the way the journeys mean it: Airplane mode, plus the server cut off (see startRelay). */
 	async setOffline(offline) {
-		if (offline) {
-			await this.adb("reverse", "--remove", "tcp:3000").catch(() => {});
-			await this.shell("cmd connectivity airplane-mode enable");
-		} else {
-			await this.shell("cmd connectivity airplane-mode disable");
-			await this.adb("reverse", "tcp:3000", `tcp:${this.hostPort}`);
+		if (offline) this.setRelayOffline(true);
+		await this.shell(`cmd connectivity airplane-mode ${offline ? "enable" : "disable"}`);
+		if (!offline) {
+			this.setRelayOffline(false);
+			await this.adb("reverse", "tcp:3000", `tcp:${this.relayPort}`);
 		}
 	}
 
@@ -201,14 +236,20 @@ export class Device {
 	/**
 	 * Turns Airplane mode on or off while Quick Settings is open. This stands in for tapping the tile,
 	 * whose place differs between images (the CI image opens the shade with one row of tiles), with the
-	 * same system setting: `cmd connectivity airplane-mode`. Turning it on also drops the adb reverse
-	 * tunnel first (Airplane mode does not cut it); turning it off restores the tunnel.
+	 * same system setting: `cmd connectivity airplane-mode`. Turning it on also cuts the server off
+	 * (Airplane mode does not cut the adb reverse tunnel; see startRelay); turning it off restores it.
 	 */
 	async setAirplaneMode(on) {
-		if (on) await this.adb("reverse", "--remove", "tcp:3000").catch(() => {});
-		await this.shell(`cmd connectivity airplane-mode ${on ? "enable" : "disable"}`);
+		await this.setOffline(on);
 		await waitFor(async () => (await this.airplaneMode()) === on, { timeout: 5_000, message: `Airplane mode to turn ${on ? "on" : "off"}` });
-		if (!on) await this.adb("reverse", "tcp:3000", `tcp:${this.hostPort}`);
+		if (on) {
+			// Confirm from the page that the server really is out of reach.
+			const page = await this.page().catch(() => null);
+			if (page) {
+				const reached = await page.evaluate(() => fetch(`/login?offline-check=${Date.now()}`, { cache: "no-store" }).then(() => true, () => false)).catch(() => false);
+				if (reached) fail("the page can still reach the server after going offline");
+			}
+		}
 	}
 
 	/** Swipes away a Chrome message bubble (such as "Save password?") if one shows up within `timeout`. */
@@ -347,7 +388,7 @@ export class Device {
 	 * Maps page CSS pixels to screen pixels. A calibration tap is swallowed in the capture phase, so it
 	 * reaches nothing in the app; it is repeated whenever the viewport changes (toolbar, keyboard, standalone).
 	 */
-	async calibrate(page, retry = false) {
+	async calibrate(page, retry = 0) {
 		const known0 = this.calibration.get(page);
 		if (!known0 || retry) await this.settle();
 		const key = await page.evaluate(() => [innerWidth, innerHeight, visualViewport.offsetTop, visualViewport.offsetLeft, visualViewport.scale, matchMedia("(display-mode: standalone)").matches].join("|"));
@@ -376,11 +417,15 @@ export class Device {
 			timeout: 3_000,
 			message: "the calibration tap to reach the page (is native UI covering it?)",
 		}).catch((error) => {
-			if (retry) throw error;
+			if (retry >= 2) throw error;
 			return null;
 		});
-		// A document that replaced the page after the listener went in (a service worker taking over, say) lost it: once more.
-		if (!hit) return this.calibrate(page, true);
+		// A document that replaced the page after the listener went in (a service worker taking over, say)
+		// lost it, and the first touch after Chrome starts can be dropped: try again, twice at most.
+		if (!hit) {
+			await sleep(700);
+			return this.calibrate(page, retry + 1);
+		}
 		const dpr = await page.evaluate(() => devicePixelRatio);
 		const cal = { key, dpr, offX: sx - hit.clientX * dpr, offY: sy - hit.clientY * dpr };
 		this.calibration.set(page, cal);

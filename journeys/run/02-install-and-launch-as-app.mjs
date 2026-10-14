@@ -72,7 +72,15 @@ const journey = {
 					await sleep(600);
 					icon = await device.findNative(homeIcon, { timeout: 3_000, message: "the Mailflare icon" }).catch(() => null);
 				}
-				expect(icon, 'no "Mailflare" icon on the home screen');
+				if (!icon) {
+					// Not on the home screen pages: open the app drawer (swipe up from the bottom), where an installed app is always listed.
+					await device.home();
+					await sleep(500);
+					await device.swipeScreen(device.width / 2, device.height * 0.85, device.width / 2, device.height * 0.2, 300);
+					await sleep(800);
+					icon = await device.findNative(homeIcon, { timeout: 5_000, message: "the Mailflare icon" }).catch(() => null);
+				}
+				expect(icon, 'no "Mailflare" icon on the home screen or in the app drawer');
 				// The label sits under the image; the image is the top part of the icon's box.
 				const imageBottom = icon.bounds.y1 + (icon.bounds.x2 - icon.bounds.x1) * 0.9;
 				const { r, g, b } = await device.meanColour({ ...icon.bounds, y2: Math.round(imageBottom) });
