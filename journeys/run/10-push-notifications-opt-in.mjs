@@ -1,4 +1,4 @@
-import { APP, expect, waitFor } from "./harness.mjs";
+import { APP, expect, fail, waitFor } from "./harness.mjs";
 
 const toast = (text) => [...document.querySelectorAll("#toast .toast")].some((t) => window.__j.visible(t) && window.__j.text(t).includes(text));
 const pushItem = () => {
@@ -36,7 +36,20 @@ const journey = {
 		],
 		[
 			'Verify that a message reading "Notifications are on for this device." appears',
-			({ device }) => device.until(toast, "Notifications are on for this device.", { timeout: 20_000, message: '"Notifications are on for this device."' }),
+			async ({ device }) => {
+				// Watch every toast, so a failure says what the app said instead (say, the push service refusing).
+				await device.eval(() => {
+					window.__jToasts = [];
+					new MutationObserver(() => {
+						const text = document.querySelector("#toast")?.innerText.trim();
+						if (text && !window.__jToasts.includes(text)) window.__jToasts.push(text);
+					}).observe(document.querySelector("#toast"), { childList: true, subtree: true, characterData: true });
+				});
+				await device.until(toast, "Notifications are on for this device.", { timeout: 20_000, message: '"Notifications are on for this device."' }).catch(async (error) => {
+					const seen = await device.eval(() => window.__jToasts).catch(() => []);
+					fail(`${error.message}; the app said: ${seen.length ? seen.map((t) => `"${t}"`).join(", ") : "nothing"}`);
+				});
+			},
 		],
 		[
 			'Wait 10 seconds for that message to disappear, then verify that the drawer item now reads "Notifications on" and is highlighted',

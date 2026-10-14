@@ -112,6 +112,20 @@ async function serverUp(timeout = 60_000) {
 	return false;
 }
 
+/**
+ * "Online" means a network, not just Airplane mode off: after a journey turns Airplane mode off, Wi-Fi
+ * and mobile data take a few seconds to come back, and push subscription (10) needs them.
+ */
+async function networkUp(timeout = 30_000) {
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		const active = await device.shell("dumpsys connectivity 2>/dev/null | grep -m1 'Active default network'").catch(() => "");
+		if (/Active default network: \d+/.test(active)) return;
+		await sleep(1_000);
+	}
+	log("  the device has no network after 30 s");
+}
+
 /** Chrome's own tab activity in front (not the installed web app, the launcher or a dialog), with DevTools attached. */
 async function chromeInFront() {
 	await device.shell("cmd statusbar collapse");
@@ -172,6 +186,7 @@ async function runJourney(journey) {
 	try {
 		// Nothing left over from the journey before: the server up, no Quick Settings, a Chrome tab in front.
 		if (!(await serverUp())) throw new Error(`the server on host port ${device.hostPort} is not answering /login (see wrangler.log)`);
+		await networkUp();
 		await chromeInFront();
 		if (script.setup) await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
 	} catch (error) {
