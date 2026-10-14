@@ -23,7 +23,7 @@ export default {
 			async ({ device, state }) => {
 				state.subject = await device.eval(() => window.__j.text(document.querySelector("li[data-row] .row-subject")));
 				state.from = await device.eval(() => window.__j.text(document.querySelector("li[data-row] .row-from")));
-				await device.tap("li[data-row] .row-subject");
+				await device.tap("li[data-row] .row-subject", { effect: () => location.pathname.startsWith("/v2/inbox/"), effectTimeout: 8_000 });
 			},
 		],
 		[
@@ -42,7 +42,7 @@ export default {
 		],
 		[
 			'Tap the small down-arrow next to "to me" under the sender\'s name',
-			({ device }) => device.tap(".msg.is-last .msg-recipients [data-details]"),
+			({ device }) => device.tap(".msg.is-last .msg-recipients [data-details]", { effect: () => [...document.querySelectorAll(".msg-details")].some((el) => !el.hidden && el.textContent.trim()), effectTimeout: 6_000 }),
 		],
 		[
 			'Verify that a panel slides up from the bottom of the screen showing "from:", "to:", "date:" and "subject:" details',
@@ -62,7 +62,7 @@ export default {
 					return c.left > s.left + s.width / 2 && c.top < s.top + 80;
 				});
 				expect(corner, "the details sheet has no close button at its top right");
-				await device.tap(".msg-details:not([hidden]) .sheet-close");
+				await device.tap(".msg-details:not([hidden]) .sheet-close", { effect: () => ![...document.querySelectorAll(".msg-details")].some((el) => !el.hidden) });
 			},
 		],
 		[
@@ -75,7 +75,7 @@ export default {
 		],
 		[
 			"Tap the three-dot button to the right of the message date",
-			({ device }) => device.tap('.msg.is-last details[data-menu="message"] > summary'),
+			({ device }) => device.tap('.msg.is-last details[data-menu="message"] > summary', { effect: () => !!document.querySelector('.msg.is-last details[data-menu="message"][open]') }),
 		],
 		[
 			'Verify that a panel slides up from the bottom of the screen listing "Reply", "Reply all", "Forward" and "Mark unread from here"',

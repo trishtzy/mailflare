@@ -9,7 +9,7 @@ export default {
 	knownIssue: "Back with the drawer open does not just close the drawer (pre-existing, see journeys/README.md)",
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
-		["Tap the menu button (three horizontal lines) at the top left of the screen", ({ device }) => device.tap("[data-nav-toggle]")],
+		["Tap the menu button (three horizontal lines) at the top left of the screen", ({ device }) => device.tap("[data-nav-toggle]", { effect: () => document.body.classList.contains("nav-open") })],
 		[
 			'Verify that a drawer slides in from the left listing "Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Archive", "All mail", "Spam" and "Trash", with "Settings" and "Switch to classic" at the bottom',
 			async ({ device }) => {
@@ -29,7 +29,7 @@ export default {
 		],
 		[
 			'Tap "Sent" in the drawer',
-			({ device }) => device.tap({ selector: "#nav .nav-label", text: "Sent" }),
+			({ device }) => device.tap({ selector: "#nav .nav-label", text: "Sent" }, { effect: () => location.pathname === "/v2/sent", effectTimeout: 8_000 }),
 		],
 		[
 			'Verify that the drawer is closed and the list heading reads "Sent"',
@@ -46,7 +46,9 @@ export default {
 		[
 			'Verify that the drawer is closed and the list heading still reads "Sent"',
 			async ({ device }) => {
-				await waitDrawer(device, false);
+				await waitDrawer(device, false).catch(async (error) => {
+					throw new Error(`${error.message}; the page is ${(await device.page()).url()}`);
+				});
 				const page = await device.page();
 				expect(page.url() === `${APP}/v2/sent`, `Back left the Sent list: the page is now ${page.url()}`);
 				const heading = await listHeading(device);

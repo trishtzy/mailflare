@@ -217,6 +217,16 @@ export class Device {
 		if (!on) await this.adb("reverse", "tcp:3000", `tcp:${this.hostPort}`);
 	}
 
+	/** Swipes away a Chrome message bubble (such as "Save password?") if one shows up within `timeout`. */
+	async dismissChromeMessage(text, { timeout = 4_000 } = {}) {
+		const node = await this.findNative((n) => n.pkg === "com.android.chrome" && text.test(n.text), { timeout, message: `Chrome's ${text} message` }).catch(() => null);
+		if (!node) return false;
+		const y = (node.bounds.y1 + node.bounds.y2) / 2;
+		await this.swipeScreen(this.width / 2, y, this.width / 2, 0, 200);
+		await waitFor(async () => !(await this.nativeNodes()).some((n) => n.pkg === "com.android.chrome" && text.test(n.text)), { timeout: 5_000, message: `Chrome's ${text} message to go away` });
+		return true;
+	}
+
 	// Native UI (Chrome menus and dialogs, the launcher) through uiautomator.
 	async nativeNodes() {
 		const xml = await this.shell("uiautomator dump /data/local/tmp/journey-ui.xml >/dev/null 2>&1; cat /data/local/tmp/journey-ui.xml; rm -f /data/local/tmp/journey-ui.xml");
@@ -323,10 +333,11 @@ export class Device {
 	 * Maps page CSS pixels to screen pixels. A calibration tap is swallowed in the capture phase, so it
 	 * reaches nothing in the app; it is repeated whenever the viewport changes (toolbar, keyboard, standalone).
 	 */
-	async calibrate(page) {
+	async calibrate(page, retry = false) {
+		const known0 = this.calibration.get(page);
+		if (!known0 || retry) await this.settle();
 		const key = await page.evaluate(() => [innerWidth, innerHeight, visualViewport.offsetTop, visualViewport.offsetLeft, visualViewport.scale, matchMedia("(display-mode: standalone)").matches].join("|"));
-		const known = this.calibration.get(page);
-		if (known?.key === key) return known;
+		if (!retry && known0?.key === key) return known0;
 		await page.evaluate(() => {
 			window.__jCal = new Promise((resolve) => {
 				// preventDefault on touchstart suppresses the mouse events and click, so touchend is the last event.
@@ -348,9 +359,14 @@ export class Device {
 		const sy = this.height * 0.3;
 		await this.tapScreen(sx, sy);
 		const hit = await waitFor(() => page.evaluate(() => Promise.race([window.__jCal, new Promise((r) => setTimeout(() => r(null), 500))])), {
-			timeout: 5_000,
+			timeout: 3_000,
 			message: "the calibration tap to reach the page (is native UI covering it?)",
+		}).catch((error) => {
+			if (retry) throw error;
+			return null;
 		});
+		// A document that replaced the page after the listener went in (a service worker taking over, say) lost it: once more.
+		if (!hit) return this.calibrate(page, true);
 		const dpr = await page.evaluate(() => devicePixelRatio);
 		const cal = { key, dpr, offX: sx - hit.clientX * dpr, offY: sy - hit.clientY * dpr };
 		this.calibration.set(page, cal);
@@ -369,10 +385,12 @@ export class Device {
 	async locate(target, { timeout = 10_000 } = {}) {
 		const page = await this.page();
 		const spec = typeof target === "string" ? { selector: target } : target;
+		let previous = null;
+		let covered = null;
 		const box = await waitFor(
 			async () => {
 				await page.evaluate(PAGE_HELPERS);
-				return page.evaluate(({ selector, text, index }) => {
+				const found = await page.evaluate(({ selector, text, index }) => {
 					const pattern = text && text.source !== undefined ? new RegExp(text.source, text.flags) : text;
 					let el;
 					if (pattern !== undefined) el = window.__j.byText(selector ?? "*", pattern);
@@ -383,6 +401,7 @@ export class Device {
 						el.scrollIntoView({ block: "center" });
 						return null;
 					}
+					if (el.disabled || el.closest("[inert]")) return { covered: "(disabled)" };
 					if (!window.__j.shown(el)) {
 						const c = window.__j.centre(el);
 						return { covered: window.__j.describe(document.elementFromPoint(c.x, c.y)) };
@@ -390,17 +409,40 @@ export class Device {
 					window.__jTarget = el;
 					return { ...window.__j.centre(el), width: r.width, height: r.height, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
 				}, { selector: spec.selector, text: spec.text instanceof RegExp ? { source: spec.text.source, flags: spec.text.flags } : spec.text, index: spec.index });
+				if (found?.covered) {
+					covered = found.covered;
+					return null;
+				}
+				// Not moving: the same box on two reads in a row (drawers and sheets slide in).
+				const key = found && [found.left, found.top, found.width, found.height].map(Math.round).join(",");
+				const stable = key && key === previous;
+				previous = key;
+				return stable ? found : null;
 			},
-			{ timeout, message: `${describeTarget(spec)} to be on screen` },
+			{ timeout, interval: 120, message: `${describeTarget(spec)} to be on screen, enabled and still` },
 		).catch((error) => {
+			if (covered) fail(`${describeTarget(spec)} is covered by ${covered}`);
 			throw error;
 		});
-		if (box.covered) fail(`${describeTarget(spec)} is covered by ${box.covered}`);
 		return { page, box };
 	}
 
-	/** Taps an element with a real touch, then checks the touch landed on it. */
+	/**
+	 * Taps an element with a real touch and checks the touch landed on it. With `effect` (a page
+	 * function), waits for it to hold and taps once more if the first touch had no effect.
+	 */
 	async tap(target, options = {}) {
+		if (!options.effect) return this.tapOnce(target, options);
+		const { effect, arg, effectTimeout = 3_000, ...rest } = options;
+		for (let attempt = 1; ; attempt++) {
+			const result = await this.tapOnce(target, rest);
+			const ok = await waitFor(() => this.eval(effect, arg), { timeout: effectTimeout, message: `the tap on ${describeTarget(typeof target === "string" ? { selector: target } : target)} to take effect` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+			if (ok) return result;
+			this.log(`  the tap on ${describeTarget(typeof target === "string" ? { selector: target } : target)} had no effect; tapping again`);
+		}
+	}
+
+	async tapOnce(target, options = {}) {
 		const { page, box } = await this.locate(target, options);
 		const point = await this.toScreen(page, box.x, box.y);
 		await page.evaluate(() => {
@@ -417,6 +459,7 @@ export class Device {
 			if (landed === undefined) break;
 			if (!landed) await sleep(100);
 		}
+		if (landed === null) fail(`the tap meant for ${describeTarget(typeof target === "string" ? { selector: target } : target)} never reached the page (native UI covering it?)`);
 		if (landed && !landed.hit) fail(`the tap meant for ${describeTarget(typeof target === "string" ? { selector: target } : target)} landed on ${landed.on}`);
 		return { page, box, point };
 	}
@@ -432,6 +475,29 @@ export class Device {
 				if (attempt >= 2) throw error;
 				this.log(`  ${selector} did not take focus; tapping again`);
 			}
+		}
+	}
+
+	/**
+	 * Focuses a field, types `text` and checks the field holds it. `input text` can drop a character
+	 * under load; then the field is emptied with Delete key presses and typed once more.
+	 */
+	async typeInto(selector, text, { append = false } = {}) {
+		const read = (sel) => {
+			const el = document.querySelector(sel);
+			return el.isContentEditable ? el.innerText.replace(/\s+/g, " ").trim() : el.value;
+		};
+		const before = append ? await this.eval(read, selector) : "";
+		for (let attempt = 1; ; attempt++) {
+			const focused = await this.eval((sel) => document.activeElement === document.querySelector(sel), selector);
+			if (!focused) await this.focus(selector);
+			await this.type(text);
+			const expected = before + text;
+			const ok = await waitFor(async () => (await this.eval(read, selector)) === expected, { timeout: 4_000, message: `${selector} to hold the typed text` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+			if (ok) return;
+			const length = (await this.eval(read, selector)).length;
+			this.log(`  ${selector} did not get all of the text; clearing and typing it again`);
+			await this.shell(`input keyevent 123 ${"67 ".repeat(Math.max(0, length - before.length) + 2)}`);
 		}
 	}
 
@@ -489,15 +555,23 @@ export class Device {
 		await this.until(() => document.readyState === "complete" && !!document.querySelector("#main"), null, { message: `${path} to load` });
 	}
 
-	/** A service worker registered by an earlier visit and controlling the page, as the offline journeys start. */
+	/**
+	 * A service worker registered by an earlier visit, as the offline journeys start: once it is active,
+	 * load the page again through it (a page loaded before the worker took control is never stored) and
+	 * wait for the stored copy.
+	 */
 	async ensureServiceWorker() {
 		let page = await this.page();
 		await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
-		if (!(await page.evaluate(() => !!navigator.serviceWorker.controller))) {
-			await page.reload({ waitUntil: "load" });
-			page = await this.page();
-		}
-		await this.until(() => !!navigator.serviceWorker.controller, null, { message: "the service worker to control the page" });
+		await page.reload({ waitUntil: "load" });
+		page = await this.page();
+		await this.until(async () => {
+			if (!navigator.serviceWorker.controller) return false;
+			for (const name of await caches.keys()) {
+				if (name.startsWith("mf-user-") && (await (await caches.open(name)).match(location.href, { ignoreVary: true }))) return true;
+			}
+			return false;
+		}, null, { message: "the service worker to control the page and store it" });
 	}
 
 	/** The v2 drawer: open when the body says so and the folder list is on screen. */
@@ -517,6 +591,28 @@ export class Device {
 			if (open) return;
 			this.log("  the drawer did not open; tapping the menu button again");
 		}
+	}
+
+	/** Waits until the page has stopped changing: the same document, fully loaded, no htmx request in flight. */
+	async settle({ timeout = 15_000 } = {}) {
+		let last = null;
+		await waitFor(async () => {
+			const now = await this.eval(() => {
+				window.__jDoc ??= Math.random().toString(36).slice(2);
+				return document.readyState === "complete" && !document.querySelector(".htmx-request") ? `${window.__jDoc} ${location.href}` : null;
+			}).catch(() => null);
+			const stable = now !== null && now === last;
+			last = now;
+			if (!stable) await sleep(400);
+			return stable;
+		}, { timeout, interval: 0, message: "the page to settle" });
+	}
+
+	/** Opens the drawer, taps a folder in it and waits for that page. */
+	async drawerTo(label) {
+		await this.openDrawer();
+		await this.tap({ selector: "#nav .nav-label", text: label });
+		await this.settle();
 	}
 
 	/** Delivers mail through the Worker's email handler on the host, as the README does with curl. */

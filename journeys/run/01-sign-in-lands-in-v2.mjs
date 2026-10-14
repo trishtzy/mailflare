@@ -7,6 +7,8 @@ export default {
 		await device.goto(`${APP}/v2/inbox`);
 		await device.until(() => location.pathname === "/login", null, { message: "the signed-out /v2/inbox to show the sign-in page" });
 	},
+	// Chrome offers to save the password after signing in; its bubble would cover the next journey's toolbar.
+	teardown: ({ device }) => device.dismissChromeMessage(/^Save password/),
 	steps: [
 		[
 			'Verify that the page shows a "Sign in" heading with an Email field and a Password field',
@@ -20,22 +22,20 @@ export default {
 			'Tap the Email field and type "admin@example.com"',
 			async ({ device }) => {
 				await device.focus("input[type=email]");
-				await device.type(LOGIN.email);
-				await device.until((value) => document.querySelector("input[type=email]").value === value, LOGIN.email, { message: `the Email field to read ${LOGIN.email}` });
+				await device.typeInto("input[type=email]", LOGIN.email);
 			},
 		],
 		[
 			'Tap the Password field and type "demo-password-change-me"',
 			async ({ device }) => {
 				await device.focus("input[type=password]");
-				await device.type(LOGIN.password);
-				await device.until((length) => document.querySelector("input[type=password]").value.length === length, LOGIN.password.length, { message: "the Password field to hold the password" });
+				await device.typeInto("input[type=password]", LOGIN.password);
 			},
 		],
 		[
 			'Tap the "Sign in" button and wait for the next page to finish loading',
 			async ({ device }) => {
-				await device.tap({ selector: "button", text: "Sign in" });
+				await device.tap({ selector: "button", text: "Sign in" }, { effect: () => location.pathname !== "/login" || !!document.querySelector("form button[disabled], [role=alert]"), effectTimeout: 15_000 });
 				await device.until(() => location.pathname !== "/login" && document.readyState === "complete", null, { timeout: 20_000, message: "the page after sign-in to load" });
 			},
 		],

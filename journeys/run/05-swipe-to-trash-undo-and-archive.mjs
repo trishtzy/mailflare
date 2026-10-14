@@ -20,7 +20,7 @@ export default {
 			"Swipe the first conversation row from the right edge of the screen towards the left edge",
 			async ({ device, state }) => {
 				state.trashed = await device.eval(firstRow);
-				await device.swipe("li[data-row]", rowSwipe("left"));
+				await swipeUntilGone(device, state.trashed.id, "left");
 			},
 		],
 		[
@@ -30,7 +30,7 @@ export default {
 				await device.see("Undo", { selector: "#toast [data-undo]" });
 			},
 		],
-		['Tap "Undo" in that message', ({ device }) => device.tap({ selector: "#toast [data-undo]", text: "Undo" })],
+		['Tap "Undo" in that message', ({ device, state }) => device.tap({ selector: "#toast [data-undo]", text: "Undo" }, { effect: (id) => !document.querySelector("#toast [data-undo]") || document.querySelector("li[data-row]")?.dataset.id === id, arg: state.trashed.id, effectTimeout: 6_000 })],
 		[
 			"Verify that the conversation that was swiped is back at the top of the inbox list",
 			({ device, state }) =>
@@ -40,7 +40,7 @@ export default {
 			"Swipe the first conversation row from the left edge of the screen towards the right edge",
 			async ({ device, state }) => {
 				state.archived = await device.eval(firstRow);
-				await device.swipe("li[data-row]", rowSwipe("right"));
+				await swipeUntilGone(device, state.archived.id, "right");
 			},
 		],
 		[
@@ -53,8 +53,7 @@ export default {
 		[
 			'Tap the menu button at the top left of the screen and tap "Archive" in the drawer',
 			async ({ device }) => {
-				await device.openDrawer();
-				await device.tap({ selector: "#nav .nav-label", text: "Archive" });
+				await device.drawerTo("Archive");
 			},
 		],
 		[
@@ -67,3 +66,15 @@ export default {
 		],
 	],
 };
+
+/** Swipes the first row; once more if the touch did not take (the row is still there and not moving). */
+async function swipeUntilGone(device, id, towards) {
+	const { waitFor } = await import("./harness.mjs");
+	const gone = () => device.eval((rowId) => ![...document.querySelectorAll("li[data-row]")].some((row) => row.dataset.id === rowId && window.__j.visible(row)), id);
+	for (let attempt = 1; ; attempt++) {
+		await device.swipe("li[data-row]", rowSwipe(towards));
+		const ok = await waitFor(gone, { timeout: 4_000, message: "the swiped row to leave the list" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+		if (ok) return;
+		device.log("  the swipe did not take; swiping again");
+	}
+}

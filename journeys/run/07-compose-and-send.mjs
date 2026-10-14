@@ -27,7 +27,7 @@ export default {
 		}
 	},
 	steps: [
-		["Tap the round compose button with the pencil icon at the bottom right of the screen", ({ device }) => device.tap(".fab")],
+		["Tap the round compose button with the pencil icon at the bottom right of the screen", ({ device }) => device.tap(".fab", { effect: () => [...document.querySelectorAll("form[data-composer]")].some(window.__j.visible), effectTimeout: 8_000 })],
 		[
 			'Verify that a "New message" composer fills the screen with "From", "To" and "Subject" fields, a message area and a "Send" button, and that the on-screen keyboard is open',
 			async ({ device }) => {
@@ -54,7 +54,7 @@ export default {
 			async ({ device }) => {
 				const focused = await device.eval(() => document.activeElement?.matches?.("form[data-composer] [data-recipients]:not([data-cmp-row] *)"));
 				if (!focused) await device.focus('form[data-composer] input[id^="to-"]');
-				await device.type("maya");
+				await device.typeInto('form[data-composer] input[id^="to-"]', "maya");
 			},
 		],
 		[
@@ -64,7 +64,7 @@ export default {
 				expect(text.includes("Maya Chen") && text.includes("maya@acme.test"), `the suggestion reads "${text}"`);
 			},
 		],
-		['Tap the "Maya Chen" suggestion', ({ device }) => device.tap({ selector: ".rcpt-suggest:not([hidden]) .rcpt-option", text: /Maya Chen/ })],
+		['Tap the "Maya Chen" suggestion', ({ device }) => device.tap({ selector: ".rcpt-suggest:not([hidden]) .rcpt-option", text: /Maya Chen/ }, { effect: () => !!document.querySelector("form[data-composer] .rcpt-chip") })],
 		[
 			'Verify that the "To" field now shows a recipient chip for Maya Chen',
 			({ device }) => device.see("Maya Chen", { selector: 'form[data-composer] .cmp-field:has(input[id^="to-"]) .rcpt-chip' }),
@@ -73,16 +73,14 @@ export default {
 			'Tap the "Subject" field and type "Journey send test"',
 			async ({ device }) => {
 				await device.focus("form[data-composer] [data-cmp-subject]");
-				await device.type(SUBJECT);
-				await device.until((v) => document.querySelector("form[data-composer] [data-cmp-subject]").value === v, SUBJECT, { message: `the Subject to read "${SUBJECT}"` });
+				await device.typeInto("form[data-composer] [data-cmp-subject]", SUBJECT);
 			},
 		],
 		[
 			'Tap the message area below the subject and type "Sent from the compose journey."',
 			async ({ device }) => {
 				await device.focus("form[data-composer] [data-editor]");
-				await device.type("Sent from the compose journey.");
-				await device.until(() => window.__j.text(document.querySelector("form[data-composer] [data-editor]")) === "Sent from the compose journey.", null, { message: "the message area to hold the text" });
+				await device.typeInto("form[data-composer] [data-editor]", "Sent from the compose journey.");
 			},
 		],
 		[
@@ -93,7 +91,7 @@ export default {
 				await device.until(ABOVE_KEYBOARD, "[data-cmp-send]", { message: "the Send button to be visible after hiding the keyboard" });
 			},
 		],
-		['Tap the "Send" button', ({ device }) => device.tap("[data-cmp-send]")],
+		['Tap the "Send" button', ({ device }) => device.tap("[data-cmp-send]", { effect: () => ![...document.querySelectorAll("form[data-composer]")].some(window.__j.visible) || !!document.querySelector("[data-cmp-send][disabled], form[data-composer].is-sending"), effectTimeout: 20_000 })],
 		[
 			'Verify that the composer closes and a message reading "Message sent." appears near the bottom of the screen',
 			async ({ device }) => {
@@ -107,8 +105,7 @@ export default {
 		[
 			'Tap the menu button at the top left of the screen and tap "Sent" in the drawer',
 			async ({ device }) => {
-				await device.openDrawer();
-				await device.tap({ selector: "#nav .nav-label", text: "Sent" });
+				await device.drawerTo("Sent");
 			},
 		],
 		[

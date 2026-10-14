@@ -134,7 +134,7 @@ async function runJourney(journey) {
 			step.durationMs = Date.now() - t;
 			step.error = error instanceof StepError ? error.message : error.stack ?? String(error);
 			result.error = step.error;
-			log(`  ❌ ${label}\n     ${step.error.split("\n")[0]}`);
+			log(`  ❌ ${label}\n     ${step.error.split("\n")[0]}${script.knownIssue ? `\n     known issue: ${script.knownIssue}` : ""}`);
 			await capture(journey.id, i + 1, step);
 		}
 	}
