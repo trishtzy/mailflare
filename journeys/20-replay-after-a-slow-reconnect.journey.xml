@@ -1,6 +1,6 @@
 <journey name="Apply an offline action when the server answers a little after the connection returns">
 	<description>
-		Start: the Mailflare v2 inbox is open and signed in, online, with at least two conversations in the list, and the service worker has been registered by an earlier visit.
+		Start: the Mailflare v2 inbox is open and signed in, online, with at least two conversations in the list, the first of them newer than any conversation in Archive (a message has just arrived), and the service worker has been registered by an earlier visit.
 		An action taken offline goes to the outbox. When Airplane mode is turned off, the device reports being online before the Mailflare server can be reached ("server not reachable yet", as when Wi-Fi is up before its routes are): on an emulator the `adb reverse` tunnel to the server stays cut, with any connection already open through it, for a few seconds after Airplane mode is off. The first try to replay the action fails; the page keeps trying and applies it once the server answers, without a reload.
 	</description>
 	<actions>

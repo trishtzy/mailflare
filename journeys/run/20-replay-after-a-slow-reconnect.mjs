@@ -1,4 +1,6 @@
-import { expect, sleep, waitFor } from "./harness.mjs";
+import { APP, expect, sleep, waitFor } from "./harness.mjs";
+
+const SUBJECT = "Slow reconnect journey";
 
 const banner = () => {
 	const el = document.querySelector("[data-offline-banner]");
@@ -10,6 +12,12 @@ const listed = (id) => [...document.querySelectorAll("li[data-row]")].some((row)
 const journey = {
 	async setup({ device }) {
 		await device.startSignedIn({ rows: 2 });
+		// Newer than anything archived earlier, so it heads the Archive list at the end (Verify only looks at what is on screen).
+		await device.deliverMail(1, SUBJECT);
+		await waitFor(async () => {
+			const page = await device.goto(`${APP}/v2/inbox`);
+			return page.evaluate((subject) => document.querySelector("li[data-row] .row-subject")?.textContent.trim().startsWith(subject), SUBJECT);
+		}, { timeout: 30_000, interval: 1_000, message: `"${SUBJECT}" at the top of the inbox` });
 		await device.ensureServiceWorker();
 	},
 	steps: [
