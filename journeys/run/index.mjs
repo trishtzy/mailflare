@@ -1,0 +1,177 @@
+#!/usr/bin/env node
+// Runs the scripted journeys against an Android emulator or device. See ../README.md.
+//
+//   node journeys/run/index.mjs [--shard 1/3] [--out dir] [--keep-chrome-data] [01 05 ...]
+//
+// Environment: ANDROID_SERIAL (which device), MAILFLARE_HOST_PORT (the host port the device's
+// localhost:3000 is reversed to, default 3000), CDP_PORT (host port for Chrome DevTools, default 9222).
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { APP, Device, StepError, sleep } from "./harness.mjs";
+import { junitXml, markdownSummary, parseJourney, shardOf } from "./report-utils.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const journeysDir = join(here, "..");
+
+const args = process.argv.slice(2);
+const option = (name) => {
+	const i = args.indexOf(name);
+	if (i < 0) return undefined;
+	const [value] = args.splice(i, 2).slice(1);
+	return value;
+};
+const flag = (name) => {
+	const i = args.indexOf(name);
+	if (i >= 0) args.splice(i, 1);
+	return i >= 0;
+};
+const shard = option("--shard");
+const out = option("--out") ?? join(journeysDir, "..", "journey-results");
+const keepChromeData = flag("--keep-chrome-data");
+const only = args;
+
+const STEP_TIMEOUT = 60_000;
+const SETUP_TIMEOUT = 90_000;
+
+const all = readdirSync(journeysDir)
+	.filter((name) => name.endsWith(".journey.xml"))
+	.sort()
+	.map((name) => ({ id: name.replace(/\.journey\.xml$/, ""), xml: readFileSync(join(journeysDir, name), "utf8") }));
+let selected = all.filter((j) => only.length === 0 || only.some((o) => j.id.startsWith(o)));
+if (shard) selected = shardOf(selected, shard);
+
+mkdirSync(join(out, "screens"), { recursive: true });
+const log = (...parts) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...parts);
+
+const device = new Device({
+	serial: process.env.ANDROID_SERIAL,
+	hostPort: Number(process.env.MAILFLARE_HOST_PORT ?? 3000),
+	cdpPort: Number(process.env.CDP_PORT ?? 9222),
+	log,
+});
+
+async function withTimeout(promise, ms, what) {
+	let timer;
+	try {
+		return await Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new StepError(`${what} did not finish within ${ms / 1000} s`)), ms)))]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function prepareDevice() {
+	await device.open();
+	log(`device ${device.serial} ${device.width}x${device.height}, server on host port ${device.hostPort}`);
+	const res = await fetch(`http://127.0.0.1:${device.hostPort}/login`).catch((error) => ({ ok: false, status: error.message }));
+	if (!res.ok) throw new Error(`The server on host port ${device.hostPort} is not answering /login (${res.status}). Start it as journeys/README.md describes.`);
+
+	await device.shell("settings put global hide_error_dialogs 1");
+	await device.setOffline(false);
+	if (!keepChromeData) {
+		// A fresh Chrome profile: one tab, no site data, notifications permission back at "Ask".
+		await device.shell("am force-stop com.android.chrome");
+		await device.shell("pm clear com.android.chrome");
+		await device.shell("pm grant com.android.chrome android.permission.POST_NOTIFICATIONS");
+	}
+	await device.shell("am set-debug-app --persistent com.android.chrome");
+	await device.shell(`echo "chrome --disable-fre --no-default-browser-check --no-first-run --disable-signin-promo" > /data/local/tmp/chrome-command-line`);
+	await device.shell(`am start -a android.intent.action.VIEW -d '${APP}/login' com.android.chrome`);
+	await device.connect();
+	await device.page({ timeout: 30_000 });
+	const chrome = (await device.shell("dumpsys package com.android.chrome | grep -m1 versionName")).trim();
+	const sdk = (await device.shell("getprop ro.build.version.sdk")).trim();
+	return { chrome: chrome.replace("versionName=", ""), sdk };
+}
+
+async function runJourney(journey) {
+	const result = { id: journey.id, name: journey.name, steps: journey.actions.map((label) => ({ label, status: "skipped" })), error: null, durationMs: 0 };
+	const file = join(here, `${journey.id}.mjs`);
+	if (!existsSync(file)) {
+		result.error = `no script: journeys/run/${journey.id}.mjs does not exist`;
+		Object.assign(result.steps[0], { status: "failed", error: result.error });
+		return result;
+	}
+	const script = (await import(pathToFileURL(file))).default;
+	const labels = script.steps.map(([label]) => label);
+	const mismatch = journey.actions.findIndex((action, i) => labels[i] !== action);
+	if (mismatch >= 0 || labels.length !== journey.actions.length) {
+		const at = mismatch >= 0 ? mismatch : Math.min(labels.length, journey.actions.length);
+		result.error = `journeys/run/${journey.id}.mjs is out of step with the XML at action ${at + 1}: XML "${journey.actions[at] ?? "(none)"}", script "${labels[at] ?? "(none)"}"`;
+		result.steps[Math.min(at, result.steps.length - 1)].status = "failed";
+		result.steps[Math.min(at, result.steps.length - 1)].error = result.error;
+		return result;
+	}
+
+	const started = Date.now();
+	const ctx = { device, log, state: {} };
+	log(`▶ ${journey.id}`);
+	try {
+		if (script.setup) await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
+	} catch (error) {
+		result.error = `setup: ${error.message}`;
+		result.steps[0].status = "failed";
+		result.steps[0].error = result.error;
+		await capture(journey.id, "setup", result.steps[0]);
+	}
+	for (const [i, [label, run]] of script.steps.entries()) {
+		if (result.error) break;
+		const step = result.steps[i];
+		const t = Date.now();
+		try {
+			await withTimeout(run(ctx), STEP_TIMEOUT, "the step");
+			step.status = "passed";
+			step.durationMs = Date.now() - t;
+			log(`  ✅ ${label} (${step.durationMs} ms)`);
+		} catch (error) {
+			step.status = "failed";
+			step.durationMs = Date.now() - t;
+			step.error = error instanceof StepError ? error.message : error.stack ?? String(error);
+			result.error = step.error;
+			log(`  ❌ ${label}\n     ${step.error.split("\n")[0]}`);
+			await capture(journey.id, i + 1, step);
+		}
+	}
+	try {
+		if (script.teardown) await withTimeout(script.teardown(ctx), SETUP_TIMEOUT, "teardown");
+	} catch (error) {
+		log(`  teardown: ${error.message}`);
+	}
+	// Whatever happened, the next journey starts online with Chrome in front.
+	await device.setOffline(false).catch(() => {});
+	result.durationMs = Date.now() - started;
+	return result;
+}
+
+async function capture(id, step, into) {
+	const file = `screens/${id}-${step}.png`;
+	try {
+		await device.screenshot(join(out, file));
+		into.screenshot = file;
+	} catch (error) {
+		log(`  (screenshot failed: ${error.message})`);
+	}
+}
+
+const started = Date.now();
+let env = {};
+const results = [];
+try {
+	env = await prepareDevice();
+	log(`Chrome ${env.chrome}, Android SDK ${env.sdk}; running ${selected.map((j) => j.id.slice(0, 2)).join(" ")}`);
+	for (const file of selected) {
+		const journey = parseJourney(file.id, file.xml);
+		results.push(await runJourney(journey));
+		await sleep(250);
+	}
+} catch (error) {
+	console.error(error);
+	results.push({ id: "setup", name: "Device and server setup", steps: [{ label: "Prepare the device", status: "failed", error: error.message }], error: error.message, durationMs: 0 });
+}
+
+const meta = { shard: shard ?? "all", chrome: env.chrome, sdk: env.sdk, durationMs: Date.now() - started };
+writeFileSync(join(out, `junit${shard ? `-${shard.replace("/", "of")}` : ""}.xml`), junitXml(results, meta));
+writeFileSync(join(out, `summary${shard ? `-${shard.replace("/", "of")}` : ""}.md`), markdownSummary(results, meta));
+const failed = results.filter((r) => r.error);
+log(`${results.length - failed.length}/${results.length} journeys passed in ${Math.round(meta.durationMs / 1000)} s; results in ${out}`);
+process.exit(failed.length ? 1 : 0);

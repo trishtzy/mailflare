@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Prepares and starts the server the journeys run against: a migrated and seeded local D1, then the
+# real Worker build under `wrangler dev`. CI runs this in the background while the emulator boots and
+# waits for journey-results/server.ready (or server.failed). Same steps as journeys/README.md.
+set -euo pipefail
+PORT="${PORT:-3000}"
+OUT="${OUT:-journey-results}"
+mkdir -p "$OUT"
+rm -f "$OUT/server.ready" "$OUT/server.failed"
+trap 'touch "$OUT/server.failed"' ERR
+t0=$SECONDS
+stamp() { echo "[server +$((SECONDS - t0))s] $*"; }
+
+npm run db:bundle
+npx wrangler d1 migrations apply DB --local
+[ -f .dev.vars ] || node scripts/generate-vapid-keys.mjs > .dev.vars
+stamp "migrated"
+
+# /api/seed answers only outside production, so seeding needs next dev.
+npx next dev -p "$PORT" > "$OUT/next-dev.log" 2>&1 &
+dev=$!
+for _ in $(seq 1 180); do
+	if curl -sf -X POST "http://127.0.0.1:$PORT/api/seed" -o "$OUT/seed.json"; then break; fi
+	sleep 1
+done
+kill "$dev" 2>/dev/null || true
+pkill -f "next dev -p $PORT" 2>/dev/null || true
+wait "$dev" 2>/dev/null || true
+grep -q '"ok":true' "$OUT/seed.json"
+npx wrangler d1 execute DB --local --command "update users set role='admin' where email='admin@example.com'" > /dev/null
+stamp "seeded"
+
+npm run build > "$OUT/build.log" 2>&1
+stamp "built"
+
+npx wrangler dev --port "$PORT" --ip 127.0.0.1 > "$OUT/wrangler.log" 2>&1 &
+for _ in $(seq 1 90); do
+	if curl -sf "http://127.0.0.1:$PORT/login" -o /dev/null; then
+		stamp "worker ready"
+		touch "$OUT/server.ready"
+		exit 0
+	fi
+	sleep 1
+done
+echo "wrangler dev did not answer /login"
+exit 1

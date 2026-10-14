@@ -1,0 +1,387 @@
+// Deterministic driver for the journeys in ../*.journey.xml. Interaction goes through the device
+// (adb `input` taps, swipes and key events, Quick Settings state through `cmd`); Chrome DevTools is
+// only used to wait for and assert on the page and to find where an element is on screen.
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { _android, chromium } from "playwright-core";
+
+const exec = promisify(execFile);
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export const APP = "http://localhost:3000";
+export const LOGIN = { email: "admin@example.com", password: "demo-password-change-me" };
+
+export class StepError extends Error {}
+
+export function fail(message) {
+	throw new StepError(message);
+}
+
+export function expect(condition, message) {
+	if (!condition) fail(message);
+}
+
+/** Polls `check` until it returns a truthy value; the last falsy value or error explains a timeout. */
+export async function waitFor(check, { timeout = 10_000, interval = 200, message = "condition" } = {}) {
+	const deadline = Date.now() + timeout;
+	let last;
+	for (;;) {
+		try {
+			const value = await check();
+			if (value) return value;
+			last = value;
+		} catch (error) {
+			if (error instanceof StepError) throw error;
+			last = error?.message ?? String(error);
+		}
+		if (Date.now() > deadline) fail(`Timed out after ${timeout} ms waiting for ${message}${last ? ` (last: ${typeof last === "string" ? last : JSON.stringify(last)})` : ""}`);
+		await sleep(interval);
+	}
+}
+
+// Runs inside the page: helpers for what a person on the device can see.
+const PAGE_HELPERS = `(() => {
+	if (window.__j) return;
+	const visible = (el) => {
+		if (!el || !el.isConnected) return false;
+		const r = el.getBoundingClientRect();
+		if (r.width < 1 || r.height < 1) return false;
+		if (r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) return false;
+		for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+			const style = getComputedStyle(node);
+			if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+		}
+		return true;
+	};
+	const centre = (el) => {
+		const r = el.getBoundingClientRect();
+		const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
+		const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+		return { x: (left + right) / 2, y: (top + bottom) / 2 };
+	};
+	// On screen and not covered by something else at its centre.
+	const shown = (el) => {
+		if (!visible(el)) return false;
+		const c = centre(el);
+		const hit = document.elementFromPoint(c.x, c.y);
+		return !!hit && (el === hit || el.contains(hit) || hit.contains(el));
+	};
+	const text = (el) => (el.innerText ?? el.textContent ?? "").replace(/\\s+/g, " ").trim();
+	const describe = (el) => {
+		if (!el) return "nothing";
+		const label = text(el).slice(0, 40);
+		return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (el.className && typeof el.className === "string" ? "." + el.className.trim().split(/\\s+/).join(".") : "") + (label ? ' "' + label + '"' : "");
+	};
+	// The smallest shown element matching the selector whose text matches.
+	const byText = (selector, pattern) => {
+		const re = typeof pattern === "string" ? null : pattern;
+		const matches = [...document.querySelectorAll(selector)].filter((el) => {
+			const t = text(el) || el.getAttribute("aria-label") || el.value || "";
+			return re ? re.test(t) : t === pattern;
+		});
+		return matches.filter(shown).sort((a, b) => a.getBoundingClientRect().width * a.getBoundingClientRect().height - b.getBoundingClientRect().width * b.getBoundingClientRect().height)[0] ?? null;
+	};
+	window.__j = { visible, shown, centre, text, describe, byText };
+})()`;
+
+export class Device {
+	constructor({ serial, hostPort = 3000, cdpPort = 9222, log = () => {} }) {
+		this.serial = serial;
+		this.hostPort = hostPort;
+		this.cdpPort = cdpPort;
+		this.log = log;
+		this.browser = null;
+		this.calibration = new WeakMap();
+	}
+
+	async open() {
+		const devices = await _android.devices();
+		this.android = this.serial ? devices.find((d) => d.serial() === this.serial) : devices[0];
+		if (!this.android) throw new Error(`No adb device${this.serial ? ` ${this.serial}` : ""} (found ${devices.map((d) => d.serial()).join(", ") || "none"})`);
+		this.serial = this.android.serial();
+		const size = (await this.shell("wm size")).match(/(\d+)x(\d+)\s*$/m);
+		this.width = Number(size[1]);
+		this.height = Number(size[2]);
+	}
+
+	async adb(...args) {
+		const { stdout } = await exec("adb", ["-s", this.serial, ...args], { maxBuffer: 32 * 1024 * 1024, encoding: "buffer" });
+		return stdout;
+	}
+
+	async shell(command) {
+		return (await this.android.shell(command)).toString("utf8");
+	}
+
+	async tapScreen(x, y) {
+		await this.shell(`input tap ${Math.round(x)} ${Math.round(y)}`);
+	}
+
+	async swipeScreen(x1, y1, x2, y2, ms = 300) {
+		await this.shell(`input swipe ${Math.round(x1)} ${Math.round(y1)} ${Math.round(x2)} ${Math.round(y2)} ${ms}`);
+	}
+
+	async back() {
+		await this.shell("input keyevent 4");
+	}
+
+	async home() {
+		await this.shell("input keyevent 3");
+	}
+
+	async enter() {
+		await this.shell("input keyevent 66");
+	}
+
+	/** Types through the on-screen keyboard's input connection, as a person typing would. */
+	async type(text) {
+		const escaped = text.replace(/[\\'"`$&|;<>()*?#~!{}[\]]/g, (c) => `\\${c}`).replace(/ /g, "%s");
+		await this.shell(`input text '${escaped.replace(/'/g, "'\\''")}'`);
+	}
+
+	async screenshot(path) {
+		await this.android.screenshot({ path });
+	}
+
+	async keyboardShown() {
+		const out = await this.shell("dumpsys input_method | grep -m1 mInputShown");
+		return /mInputShown=true/.test(out);
+	}
+
+	/** Device offline the way the journeys mean it: Airplane mode, plus dropping the adb reverse tunnel, which Airplane mode does not cut. */
+	async setOffline(offline) {
+		if (offline) {
+			await this.adb("reverse", "--remove", "tcp:3000").catch(() => {});
+			await this.shell("cmd connectivity airplane-mode enable");
+		} else {
+			await this.shell("cmd connectivity airplane-mode disable");
+			await this.adb("reverse", "tcp:3000", `tcp:${this.hostPort}`);
+		}
+	}
+
+	// Native UI (Chrome menus and dialogs, the launcher) through uiautomator.
+	async nativeNodes() {
+		const xml = await this.shell("uiautomator dump /dev/tty 2>/dev/null");
+		return [...xml.matchAll(/<node ([^>]*?)\/?>/g)].map(([, attrs]) => {
+			const get = (name) => attrs.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? "";
+			const b = get("bounds").match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+			return {
+				text: decodeXml(get("text")),
+				desc: decodeXml(get("content-desc")),
+				id: get("resource-id"),
+				pkg: get("package"),
+				clickable: get("clickable") === "true",
+				bounds: b ? { x1: +b[1], y1: +b[2], x2: +b[3], y2: +b[4] } : null,
+			};
+		});
+	}
+
+	async findNative(match, { timeout = 10_000, message } = {}) {
+		const test = typeof match === "function" ? match : (n) => match.test(n.text) || match.test(n.desc);
+		return waitFor(async () => (await this.nativeNodes()).find((n) => n.bounds && test(n)), { timeout, interval: 300, message: message ?? `native element ${match}` });
+	}
+
+	async tapNative(match, options) {
+		const node = await this.findNative(match, options);
+		await this.tapScreen((node.bounds.x1 + node.bounds.x2) / 2, (node.bounds.y1 + node.bounds.y2) / 2);
+		return node;
+	}
+
+	// Chrome DevTools, forwarded from the device's chrome_devtools_remote socket.
+	async connect() {
+		await this.adb("forward", `tcp:${this.cdpPort}`, "localabstract:chrome_devtools_remote");
+		this.browser = await waitFor(
+			async () => {
+				const res = await fetch(`http://127.0.0.1:${this.cdpPort}/json/version`).catch(() => null);
+				if (!res?.ok) return null;
+				return chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
+			},
+			{ timeout: 30_000, interval: 500, message: "Chrome DevTools on the device" },
+		);
+		this.browser.on("disconnected", () => {
+			this.browser = null;
+		});
+	}
+
+	pages() {
+		return this.browser ? this.browser.contexts().flatMap((c) => c.pages()) : [];
+	}
+
+	/** The Mailflare page in front: the one on localhost:3000 whose document is visible. */
+	async page({ timeout = 10_000 } = {}) {
+		return waitFor(
+			async () => {
+				if (!this.browser) await this.connect();
+				const candidates = this.pages().filter((p) => p.url().startsWith(APP));
+				for (const p of candidates.reverse()) {
+					const state = await p.evaluate(() => document.visibilityState).catch(() => null);
+					if (state === "visible") return p;
+				}
+				return null;
+			},
+			{ timeout, message: "a visible localhost:3000 page in Chrome" },
+		);
+	}
+
+	async eval(fn, arg, { page } = {}) {
+		const p = page ?? (await this.page());
+		await p.evaluate(PAGE_HELPERS);
+		return p.evaluate(fn, arg);
+	}
+
+	/** Waits until `fn` (run in the page with window.__j helpers) returns something truthy. Survives navigations. */
+	async until(fn, arg, { timeout = 10_000, message } = {}) {
+		return waitFor(() => this.eval(fn, arg), { timeout, message: message ?? String(fn) });
+	}
+
+	/**
+	 * Maps page CSS pixels to screen pixels. A calibration tap is swallowed in the capture phase, so it
+	 * reaches nothing in the app; it is repeated whenever the viewport changes (toolbar, keyboard, standalone).
+	 */
+	async calibrate(page) {
+		const key = await page.evaluate(() => [innerWidth, innerHeight, visualViewport.offsetTop, visualViewport.offsetLeft, visualViewport.scale, matchMedia("(display-mode: standalone)").matches].join("|"));
+		const known = this.calibration.get(page);
+		if (known?.key === key) return known;
+		await page.evaluate(() => {
+			window.__jCal = new Promise((resolve) => {
+				const types = ["pointerdown", "pointerup", "pointercancel", "touchstart", "touchend", "mousedown", "mouseup", "click"];
+				const swallow = (event) => {
+					event.preventDefault();
+					event.stopImmediatePropagation();
+					if (event.type === "touchstart") {
+						const t = event.touches[0];
+						resolve({ clientX: t.clientX, clientY: t.clientY });
+					}
+					if (event.type === "click" || event.type === "touchend") setTimeout(() => types.forEach((type) => removeEventListener(type, swallow, true)), 400);
+				};
+				types.forEach((type) => addEventListener(type, swallow, { capture: true, passive: false }));
+			});
+		});
+		const sx = this.width / 2;
+		const sy = this.height * 0.3;
+		await this.tapScreen(sx, sy);
+		const hit = await waitFor(() => page.evaluate(() => Promise.race([window.__jCal, new Promise((r) => setTimeout(() => r(null), 500))])), {
+			timeout: 5_000,
+			message: "the calibration tap to reach the page (is native UI covering it?)",
+		});
+		const dpr = await page.evaluate(() => devicePixelRatio);
+		const cal = { key, dpr, offX: sx - hit.clientX * dpr, offY: sy - hit.clientY * dpr };
+		this.calibration.set(page, cal);
+		return cal;
+	}
+
+	async toScreen(page, x, y) {
+		const cal = await this.calibrate(page);
+		return { x: cal.offX + x * cal.dpr, y: cal.offY + y * cal.dpr };
+	}
+
+	/**
+	 * Finds an element in the page (CSS selector, or `{ selector, text }` matched on visible text) and
+	 * returns its centre, after checking a person could see and tap it.
+	 */
+	async locate(target, { timeout = 10_000 } = {}) {
+		const page = await this.page();
+		const spec = typeof target === "string" ? { selector: target } : target;
+		const box = await waitFor(
+			async () => {
+				await page.evaluate(PAGE_HELPERS);
+				return page.evaluate(({ selector, text, index }) => {
+					const pattern = text && text.source !== undefined ? new RegExp(text.source, text.flags) : text;
+					let el;
+					if (pattern !== undefined) el = window.__j.byText(selector ?? "*", pattern);
+					else el = [...document.querySelectorAll(selector)].filter(window.__j.visible)[index ?? 0];
+					if (!el) return null;
+					const r = el.getBoundingClientRect();
+					if (r.top < 0 || r.bottom > innerHeight) {
+						el.scrollIntoView({ block: "center" });
+						return null;
+					}
+					if (!window.__j.shown(el)) {
+						const c = window.__j.centre(el);
+						return { covered: window.__j.describe(document.elementFromPoint(c.x, c.y)) };
+					}
+					window.__jTarget = el;
+					return { ...window.__j.centre(el), width: r.width, height: r.height, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+				}, { selector: spec.selector, text: spec.text instanceof RegExp ? { source: spec.text.source, flags: spec.text.flags } : spec.text, index: spec.index });
+			},
+			{ timeout, message: `${describeTarget(spec)} to be on screen` },
+		).catch((error) => {
+			throw error;
+		});
+		if (box.covered) fail(`${describeTarget(spec)} is covered by ${box.covered}`);
+		return { page, box };
+	}
+
+	/** Taps an element with a real touch, then checks the touch landed on it. */
+	async tap(target, options = {}) {
+		const { page, box } = await this.locate(target, options);
+		const point = await this.toScreen(page, box.x, box.y);
+		await page.evaluate(() => {
+			window.__jTap = null;
+			addEventListener("pointerdown", (event) => {
+				window.__jTap = { hit: window.__jTarget?.contains(event.target) || event.target.contains?.(window.__jTarget), on: window.__j.describe(event.target) };
+			}, { capture: true, once: true });
+		});
+		await this.tapScreen(point.x, point.y);
+		const landed = await page.evaluate(() => window.__jTap).catch(() => undefined);
+		if (landed && !landed.hit) fail(`the tap meant for ${describeTarget(typeof target === "string" ? { selector: target } : target)} landed on ${landed.on}`);
+		return { page, box, point };
+	}
+
+	/** Swipes across an element horizontally or vertically (fractions of its box), with a real touch. */
+	async swipe(target, { from = [0.9, 0.5], to = [0.1, 0.5], ms = 300, screenEdge = false } = {}) {
+		const { page, box } = await this.locate(target);
+		const w = box.right - box.left;
+		const h = box.bottom - box.top;
+		const a = await this.toScreen(page, box.left + w * from[0], box.top + h * from[1]);
+		const b = await this.toScreen(page, box.left + w * to[0], box.top + h * to[1]);
+		if (screenEdge) {
+			a.x = Math.min(Math.max(a.x, 40), this.width - 40);
+			b.x = Math.min(Math.max(b.x, 40), this.width - 40);
+		}
+		await this.swipeScreen(a.x, a.y, b.x, b.y, ms);
+	}
+
+	async goto(url) {
+		const page = await this.page().catch(() => null);
+		if (page) {
+			await page.goto(url, { waitUntil: "load" });
+		} else {
+			await this.shell(`am start -a android.intent.action.VIEW -d '${url}' com.android.chrome`);
+		}
+		return this.page();
+	}
+
+	/** Signs in through the API, as setup for journeys that start signed in. */
+	async signIn() {
+		let page = await this.page().catch(() => null);
+		if (!page) page = await this.goto(`${APP}/login`);
+		const status = await page.evaluate(async (login) => (await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(login) })).status, LOGIN);
+		if (status !== 200) fail(`sign-in for setup answered ${status}`);
+	}
+
+	async signOut() {
+		const page = await this.page();
+		await page.evaluate(() => fetch("/api/auth/logout", { method: "POST" }).catch(() => {}));
+		await page.context().clearCookies();
+	}
+
+	/** Delivers mail through the Worker's email handler on the host, as the README does with curl. */
+	async deliverMail(count, prefix = "Journey mail") {
+		for (let i = 1; i <= count; i++) {
+			const id = `journey-${Date.now()}-${i}-${Math.random().toString(36).slice(2)}@journeys.test`;
+			const raw = [`From: Journey Sender ${i} <sender${i}@journeys.test>`, "To: support@example.com", `Subject: ${prefix} ${i}`, `Message-ID: <${id}>`, `Date: ${new Date().toUTCString()}`, "Content-Type: text/plain; charset=utf-8", "", `Hello from the journey run, message ${i}.`, ""].join("\r\n");
+			const res = await fetch(`http://127.0.0.1:${this.hostPort}/cdn-cgi/handler/email?from=sender${i}@journeys.test&to=support@example.com`, { method: "POST", body: raw });
+			if (!res.ok) throw new Error(`mail delivery answered ${res.status}`);
+		}
+	}
+}
+
+function describeTarget(spec) {
+	if (spec.text !== undefined) return `"${spec.text}"${spec.selector ? ` (${spec.selector})` : ""}`;
+	return spec.selector + (spec.index ? `[${spec.index}]` : "");
+}
+
+function decodeXml(value) {
+	return value.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
