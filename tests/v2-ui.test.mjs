@@ -341,9 +341,10 @@ test("offline, the classic push card says so instead of claiming push is not con
 	assert.equal(v2.pushKeyFailureState(new TypeError("Failed to fetch"), true), "offline");
 	assert.equal(v2.pushKeyFailureState(new Error("Could not check notifications"), false), "offline");
 	assert.equal(v2.pushKeyFailureState(new Error("Could not check notifications"), true), "unavailable");
-	// Opened offline it does not sit on "Checking..."; back online a stale "offline" reloads.
+	// Opened offline it does not sit on "Checking...".
 	assert.equal(v2.shownPushControlState("loading", false), "offline");
-	assert.equal(v2.shownPushControlState("offline", true), "loading");
+	assert.equal(v2.shownPushControlState("loading", true), "loading");
+	assert.equal(v2.shownPushControlState("offline", true), "offline", "a failing connection the browser calls online");
 	assert.equal(v2.shownPushControlState("on", false), "on", "the known state stays visible offline");
 	assert.equal(v2.shownPushControlState("off", true), "off");
 	// Failures read as offline, never as the raw "Failed to fetch".

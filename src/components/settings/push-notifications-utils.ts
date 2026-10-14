@@ -20,11 +20,13 @@ export function pushKeyFailureState(error: unknown, online: boolean): "offline" 
 	return !online || error instanceof TypeError ? "offline" : "unavailable";
 }
 
-/** The state to show: still checking while offline is offline, and "offline" is stale once the connection is back. */
+/**
+ * The state to show: still checking while offline is offline. An "offline"
+ * result stays until the reload that reconnecting starts replaces it, since a
+ * connection that fails while the browser reports online is offline too.
+ */
 export function shownPushControlState(state: PushControlState, online: boolean): PushControlState {
-	if (!online && state === "loading") return "offline";
-	if (online && state === "offline") return "loading";
-	return state;
+	return !online && state === "loading" ? "offline" : state;
 }
 
 /** What to tell the user when turning notifications on or off failed. Mirrors pushErrorMessage in public/v2-assets/app.js. */
