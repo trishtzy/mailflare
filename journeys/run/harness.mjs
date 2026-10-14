@@ -390,8 +390,10 @@ export class Device {
 		const a = await this.toScreen(page, box.left + w * from[0], box.top + h * from[1]);
 		const b = await this.toScreen(page, box.left + w * to[0], box.top + h * to[1]);
 		if (screenEdge) {
-			a.x = Math.min(Math.max(a.x, 40), this.width - 40);
-			b.x = Math.min(Math.max(b.x, 40), this.width - 40);
+			// "From the edge of the screen", but outside the system Back gesture zone along each side.
+			const inset = Math.round(this.width * 0.075);
+			a.x = Math.min(Math.max(a.x, inset), this.width - inset);
+			b.x = Math.min(Math.max(b.x, inset), this.width - inset);
 		}
 		await this.swipeScreen(a.x, a.y, b.x, b.y, ms);
 	}
