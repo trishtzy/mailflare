@@ -10,6 +10,10 @@ const exec = promisify(execFile);
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const APP = "http://localhost:3000";
+// A static same-origin page for setup work (signing in through the API, calibrating touches). The
+// sign-in page starts background requests, and leaving it while they stream has made wrangler dev
+// exit ("Network connection lost" in its dev proxy), so setup does not go through it.
+export const BLANK = `${APP}/v2-assets/offline`;
 export const LOGIN = { email: "admin@example.com", password: "demo-password-change-me" };
 
 export class StepError extends Error {}
@@ -430,9 +434,7 @@ export class Device {
 		const hit = await waitFor(() => page.evaluate(() => Promise.race([window.__jCal, new Promise((r) => setTimeout(() => r(null), 500))])), {
 			timeout: 3_000,
 			message: "the calibration tap to reach the page (is native UI covering it?)",
-		}).catch((error) => {
-			return null;
-		});
+		}).catch(() => null);
 		if (!hit && retry >= 2) fail(`${"the calibration tap did not reach the page"}; ${await this.diagnoseTouch(sx, sy)}`);
 		// A document that replaced the page after the listener went in (a service worker taking over, say)
 		// lost it, and the first touch after Chrome starts can be dropped: try again, twice at most.
@@ -453,7 +455,7 @@ export class Device {
 			const pages = this.pages();
 			await Promise.all(pages.map((p) => p.evaluate(() => {
 				window.__jSeen = [];
-				for (const type of ["pointerdown", "touchstart"]) addEventListener(type, (e) => window.__jSeen.push(type), { capture: true });
+				for (const type of ["pointerdown", "touchstart"]) addEventListener(type, () => window.__jSeen.push(type), { capture: true });
 			}).catch(() => {})));
 			await this.tapScreen(x, y);
 			await sleep(800);
@@ -635,7 +637,7 @@ export class Device {
 	/** Signs in through the API, as setup for journeys that start signed in. */
 	async signIn() {
 		let page = await this.page().catch(() => null);
-		if (!page) page = await this.goto(`${APP}/login`);
+		if (!page) page = await this.goto(BLANK);
 		const status = await page.evaluate(async (login) => (await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(login) })).status, LOGIN);
 		if (status !== 200) fail(`sign-in for setup answered ${status}`);
 	}
@@ -648,7 +650,7 @@ export class Device {
 
 	/** Signed in, online, on `path` (default the v2 inbox) with at least `rows` conversations in the inbox. */
 	async startSignedIn({ path = "/v2/inbox", rows = 1 } = {}) {
-		await this.goto(`${APP}/login`);
+		await this.goto(BLANK);
 		await this.signIn();
 		let page = await this.goto(`${APP}/v2/inbox`);
 		const count = await page.evaluate(() => document.querySelectorAll("li[data-row]").length);

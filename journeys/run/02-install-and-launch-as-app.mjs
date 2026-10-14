@@ -1,4 +1,4 @@
-import { APP, expect, fail, sleep, waitFor } from "./harness.mjs";
+import { BLANK, expect, fail, sleep, waitFor } from "./harness.mjs";
 
 const chrome = (n) => n.pkg === "com.android.chrome";
 const launcher = (n) => /launcher/.test(n.pkg);
@@ -13,7 +13,7 @@ const journey = {
 	async teardown({ device }) {
 		// Leave the installed app, so the next journey starts in a Chrome tab again.
 		await device.shell("am force-stop com.android.chrome");
-		await device.shell(`am start -a android.intent.action.VIEW -d '${APP}/login' com.android.chrome`);
+		await device.shell(`am start -a android.intent.action.VIEW -d '${BLANK}' com.android.chrome`);
 		await device.page({ timeout: 30_000 });
 	},
 	steps: [

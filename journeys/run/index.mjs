@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { APP, Device, StepError, sleep } from "./harness.mjs";
+import { BLANK, Device, StepError, sleep } from "./harness.mjs";
 import { junitXml, markdownSummary, outcome, parseJourney, runFails, shardOf } from "./report-utils.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -79,12 +79,12 @@ async function prepareDevice() {
 	}
 	await device.shell("am set-debug-app --persistent com.android.chrome");
 	await device.shell(`echo "chrome --disable-fre --no-default-browser-check --no-first-run --disable-signin-promo" > /data/local/tmp/chrome-command-line`);
-	await device.shell(`am start -a android.intent.action.VIEW -d '${APP}/login' com.android.chrome`);
+	await device.shell(`am start -a android.intent.action.VIEW -d '${BLANK}' com.android.chrome`);
 	await device.connect();
 	await device.page({ timeout: 30_000 });
 	await device.singleTab();
 	// Touches have been seen not to reach Chrome for a while right after the emulator boots: wait until
-	// one does (on the sign-in page, where a swallowed tap changes nothing) before any journey starts.
+	// one does (on a static page, where a swallowed tap changes nothing) before any journey starts.
 	const warm = Date.now();
 	for (let attempt = 1; ; attempt++) {
 		const ok = await device.calibrate(await device.page()).then(() => true, (error) => {
@@ -119,12 +119,12 @@ async function chromeInFront() {
 	if (/ChromeTabbedActivity/.test(focus) && device.browser) return;
 	log(`  resetting Chrome (in front: ${focus.trim().replace(/^.*\{[^ ]+ u0 /, "").replace(/\}$/, "") || "nothing"})`);
 	await device.shell("am force-stop com.android.chrome");
-	await device.shell(`am start -a android.intent.action.VIEW -d '${APP}/login' com.android.chrome`);
+	await device.shell(`am start -a android.intent.action.VIEW -d '${BLANK}' com.android.chrome`);
 	device.browser = null;
 	await device.page({ timeout: 30_000 });
 	await device.singleTab();
 	// Touches have been seen not to reach Chrome for a while right after the emulator boots: wait until
-	// one does (on the sign-in page, where a swallowed tap changes nothing) before any journey starts.
+	// one does (on a static page, where a swallowed tap changes nothing) before any journey starts.
 	const warm = Date.now();
 	for (let attempt = 1; ; attempt++) {
 		const ok = await device.calibrate(await device.page()).then(() => true, (error) => {
