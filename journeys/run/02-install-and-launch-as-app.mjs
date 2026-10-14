@@ -51,8 +51,11 @@ const journey = {
 			'Tap "Install" (or "Add") in that dialog, and tap "Add" or "Add automatically" if a second confirmation appears',
 			async ({ device }) => {
 				await device.tapNative((n) => chrome(n) && /positive_button$/.test(n.id), { message: 'the "Install" button' });
-				const confirm = await device.findNative((n) => launcher(n) && n.clickable && /^(Add|Add automatically|Add to home screen)$/i.test(n.text), { timeout: 6_000, message: "the launcher's confirmation" }).catch(() => null);
+				// The launcher asks to confirm the new shortcut; on a slow emulator that can take a while to appear.
+				const isConfirm = (n) => launcher(n) && n.clickable && /^(Add|Add automatically|Add to home screen)$/i.test(n.text);
+				const confirm = await device.findNative(isConfirm, { timeout: 15_000, message: "the launcher's confirmation" }).catch(() => null);
 				if (confirm) await device.tapScreen((confirm.bounds.x1 + confirm.bounds.x2) / 2, (confirm.bounds.y1 + confirm.bounds.y2) / 2);
+				else device.log(`  no launcher confirmation; on screen: ${(await device.nativeNodes()).filter((n) => n.text || n.desc).map((n) => n.text || n.desc).slice(0, 15).join(" | ")}`);
 				await waitFor(async () => !(await device.nativeNodes()).some((n) => launcher(n) && /^(Add automatically|Add to home screen)$/i.test(n.text) && n.clickable), { timeout: 6_000, message: "the confirmation to close" });
 			},
 		],
