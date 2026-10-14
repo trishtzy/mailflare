@@ -169,7 +169,7 @@ export function RichTextEditor({
 					</div>
 				)}
 			</div>
-			<div className="relative flex items-center gap-0.5 border-t border-neutral-100 px-4 py-3">
+			<div className="relative flex items-center gap-0.5 border-t border-neutral-100 px-4 py-3 max-sm:flex-wrap max-sm:gap-y-1 max-sm:px-3">
 				{toolbarStart}
 				{COMMANDS.map((item) => (
 					<Tooltip key={item.command} label={item.label}>
