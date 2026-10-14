@@ -505,7 +505,7 @@ test("Background Sync replays the outbox in order for the user the page recorded
 	], "oldest first, as the user who queued them");
 	assert.deepEqual(plain(worker.locks), [{ name: "mf-outbox", held: false }], "a page draining at the same time waits for the lock");
 	assert.deepEqual(outbox.ids(), ["e3"], "another user's entry is never sent");
-	assert.deepEqual(plain(worker.posted), [{ type: "outbox-drained", result: { sent: 2, dropped: 0, remaining: 0, signedOut: false } }]);
+	assert.deepEqual(plain(worker.posted), [{ type: "outbox-drained", result: { sent: 2, dropped: 0, remaining: 0, signedOut: false, unreachable: false } }]);
 });
 
 test("Background Sync does nothing until a page has recorded whose outbox it is", async () => {
@@ -524,13 +524,13 @@ test("Background Sync that cannot reach the server keeps the entries and fails, 
 	const outbox = seedOutbox(worker, { user: "usr_a", entries: [queued("e1", "act", [["ids", "m1"], ["action", "archive"]])] });
 	await assert.rejects(fire(worker, "sync", { tag: "mf-outbox" }), /Outbox not drained/);
 	assert.deepEqual(outbox.ids(), ["e1"]);
-	assert.deepEqual(plain(worker.posted), [{ type: "outbox-drained", result: { sent: 0, dropped: 0, remaining: 1, signedOut: false } }], "open pages still show 1 change waiting");
+	assert.deepEqual(plain(worker.posted), [{ type: "outbox-drained", result: { sent: 0, dropped: 0, remaining: 1, signedOut: false, unreachable: true } }], "open pages still show 1 change waiting, and know the server was out of reach");
 
 	worker.network.online = true;
 	await fire(worker, "sync", { tag: "mf-outbox" });
 	assert.deepEqual(server.calls.map((call) => call.fields.ids), ["m1"]);
 	assert.deepEqual(outbox.ids(), []);
-	assert.deepEqual(plain(worker.posted.at(-1)), { type: "outbox-drained", result: { sent: 1, dropped: 0, remaining: 0, signedOut: false } });
+	assert.deepEqual(plain(worker.posted.at(-1)), { type: "outbox-drained", result: { sent: 1, dropped: 0, remaining: 0, signedOut: false, unreachable: false } });
 });
 
 test("Background Sync tells open pages why an entry was refused, and which server draft a queued send saved", async () => {
@@ -552,7 +552,7 @@ test("Background Sync tells open pages why an entry was refused, and which serve
 	assert.deepEqual(plain(worker.posted), [
 		{ type: "outbox-dropped", message: "Pick a time in the future." },
 		{ type: "outbox-draft", key: "k1", draftId: "msg_new" },
-		{ type: "outbox-drained", result: { sent: 1, dropped: 1, remaining: 0, signedOut: false } },
+		{ type: "outbox-drained", result: { sent: 1, dropped: 1, remaining: 0, signedOut: false, unreachable: false } },
 	]);
 	assert.deepEqual(outbox.ids(), []);
 });
@@ -572,7 +572,7 @@ test("Background Sync that finds the user signed out drops every user's cached m
 	assert.deepEqual(userCaches(worker), []);
 	assert.deepEqual(outbox.ids(), []);
 	assert.equal(outbox.user(), null, "the next page to load records its own user");
-	assert.deepEqual(plain(worker.posted), [{ type: "outbox-drained", result: { sent: 0, dropped: 0, remaining: 2, signedOut: true } }], "pages purge their copies too");
+	assert.deepEqual(plain(worker.posted), [{ type: "outbox-drained", result: { sent: 0, dropped: 0, remaining: 2, signedOut: true, unreachable: false } }], "pages purge their copies too");
 });
 
 const KEY = new Uint8Array([4, ...Array.from({ length: 64 }, (_, index) => (index * 37 + 250) % 256)]);
