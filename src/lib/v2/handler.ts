@@ -30,7 +30,7 @@ import { loadThread, markUnreadFrom, resolveActionTargets, restoreMessages, runA
 import { parseUndoEntries, type UndoEntry } from "./data/thread-utils";
 import { resolveSnoozeTime } from "./data/time-utils";
 import { defaultSender, navStateFor, readCookie, renderComposePage, renderRoute, timeZoneOf, withSenders, writeScope } from "./pages";
-import { renderNav, renderToast } from "./render/layout";
+import { renderNav, renderToast, SERVICE_WORKER_URL } from "./render/layout";
 import { renderComposer, renderDock } from "./render/compose";
 import { formatFullDate } from "./render/format";
 import { renderDetails, renderMessageBody } from "./render/thread";
@@ -485,6 +485,8 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 			return htmlResponse(renderMessageBody(message));
 		}
 		if (name === "contacts") return handleContacts(ctx);
+		// For pages without data-vapid-key (classic settings, the service worker re-subscribing).
+		if (name === "push" && id === "key") return jsonResponse({ publicKey: ctx.vapidPublicKey, serviceWorker: SERVICE_WORKER_URL });
 		if (name === "poll") {
 			const page = await renderRoute(at(ctx, safeReturnPath(url.searchParams.get("path"))));
 			return htmlResponse(page.body);
