@@ -417,9 +417,9 @@ export class Device {
 			timeout: 3_000,
 			message: "the calibration tap to reach the page (is native UI covering it?)",
 		}).catch((error) => {
-			if (retry >= 2) throw error;
 			return null;
 		});
+		if (!hit && retry >= 2) fail(`${"the calibration tap did not reach the page"}; ${await this.diagnoseTouch(sx, sy)}`);
 		// A document that replaced the page after the listener went in (a service worker taking over, say)
 		// lost it, and the first touch after Chrome starts can be dropped: try again, twice at most.
 		if (!hit) {
@@ -430,6 +430,29 @@ export class Device {
 		const cal = { key, dpr, offX: sx - hit.clientX * dpr, offY: sy - hit.clientY * dpr };
 		this.calibration.set(page, cal);
 		return cal;
+	}
+
+	/** What happens to a tap that does not reach the page: for the failure message. */
+	async diagnoseTouch(x, y) {
+		const parts = [];
+		try {
+			const pages = this.pages();
+			await Promise.all(pages.map((p) => p.evaluate(() => {
+				window.__jSeen = [];
+				for (const type of ["pointerdown", "touchstart"]) addEventListener(type, (e) => window.__jSeen.push(type), { capture: true });
+			}).catch(() => {})));
+			await this.tapScreen(x, y);
+			await sleep(800);
+			const seen = await Promise.all(pages.map(async (p) => `${p.url()} [${await p.evaluate(() => `${document.visibilityState}, ${document.hasFocus() ? "focused" : "unfocused"}, ${window.__jSeen.join("+") || "no touch"}`).catch((e) => e.message.slice(0, 40))}]`));
+			parts.push(`pages: ${seen.join("; ")}`);
+			parts.push((await this.shell("dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -2")).replace(/\s+/g, " ").trim());
+			parts.push(`input: ${(await this.shell("dumpsys input 2>/dev/null | grep -E 'FocusedWindow|FocusedApplication' | head -3")).replace(/\s+/g, " ").trim()}`);
+			const at = (await this.nativeNodes()).filter((n) => n.bounds && n.bounds.x1 <= x && x <= n.bounds.x2 && n.bounds.y1 <= y && y <= n.bounds.y2).map((n) => `${n.pkg.split(".").pop()}:${n.id.split("/").pop() || "-"}`);
+			parts.push(`at the tap point: ${at.slice(-4).join(" > ") || "nothing"}`);
+		} catch (error) {
+			parts.push(`(diagnosis failed: ${error.message})`);
+		}
+		return parts.join(" | ");
 	}
 
 	async toScreen(page, x, y) {
