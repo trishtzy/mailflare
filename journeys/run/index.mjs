@@ -82,6 +82,19 @@ async function prepareDevice() {
 	await device.connect();
 	await device.page({ timeout: 30_000 });
 	await device.singleTab();
+	// Touches have been seen not to reach Chrome for a while right after the emulator boots: wait until
+	// one does (on the sign-in page, where a swallowed tap changes nothing) before any journey starts.
+	const warm = Date.now();
+	for (let attempt = 1; ; attempt++) {
+		const ok = await device.calibrate(await device.page()).then(() => true, (error) => {
+			log(`  touch warm-up ${attempt}: ${error.message}`);
+			return false;
+		});
+		if (ok) break;
+		if (Date.now() - warm > 45_000) throw new Error("touches on the screen never reached Chrome");
+		await sleep(2_000);
+	}
+	log(`touch input reaches Chrome (${Math.round((Date.now() - warm) / 100) / 10} s)`);
 	const chrome = (await device.shell("dumpsys package com.android.chrome 2>/dev/null | grep -m1 versionName")).trim();
 	const sdk = (await device.shell("getprop ro.build.version.sdk")).trim();
 	return { chrome: chrome.replace("versionName=", ""), sdk };
@@ -109,6 +122,19 @@ async function chromeInFront() {
 	device.browser = null;
 	await device.page({ timeout: 30_000 });
 	await device.singleTab();
+	// Touches have been seen not to reach Chrome for a while right after the emulator boots: wait until
+	// one does (on the sign-in page, where a swallowed tap changes nothing) before any journey starts.
+	const warm = Date.now();
+	for (let attempt = 1; ; attempt++) {
+		const ok = await device.calibrate(await device.page()).then(() => true, (error) => {
+			log(`  touch warm-up ${attempt}: ${error.message}`);
+			return false;
+		});
+		if (ok) break;
+		if (Date.now() - warm > 45_000) throw new Error("touches on the screen never reached Chrome");
+		await sleep(2_000);
+	}
+	log(`touch input reaches Chrome (${Math.round((Date.now() - warm) / 100) / 10} s)`);
 }
 
 async function runJourney(journey) {
