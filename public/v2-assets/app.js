@@ -1614,10 +1614,15 @@
 		if (event.detail.target?.id === "main") applyPendingToList();
 	});
 
-	// Offline, an attachment comes from the worker's cache if it was opened before.
+	// Online, the worker keeps a copy of an attachment as it is downloaded (the
+	// download itself never passes through it); offline, that copy is saved instead.
 	document.addEventListener("click", (event) => {
 		const link = event.target instanceof Element ? event.target.closest("a.attachment") : null;
-		if (!link || navigator.onLine) return;
+		if (!link) return;
+		if (navigator.onLine) {
+			postToWorker({ type: "keep-file", url: link.href });
+			return;
+		}
 		event.preventDefault();
 		fetch(link.href)
 			.then((response) => (response.ok ? response.blob() : Promise.reject(new Error("not cached"))))

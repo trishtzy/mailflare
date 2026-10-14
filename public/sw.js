@@ -171,7 +171,11 @@ async function serveOffline(url) {
 		return new Response(Offline.markCached(await hit.text(), cachedAt), { status: 200, headers });
 	}
 	const offline = await caches.match(OFFLINE_URL, { cacheName: STATIC_CACHE });
-	return offline || new Response("You're offline.", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+	// Cloudflare's asset server redirects *.html to the extensionless URL, so the
+	// precached copy is a redirected response, which a navigation refuses
+	// (net::ERR_FAILED). A fresh Response carrying the same page is not.
+	if (offline) return new Response(await offline.blob(), { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+	return new Response("You're offline.", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
 async function pageFromNetworkOrCache(event, request, url) {
@@ -283,12 +287,26 @@ async function warmPage(href) {
 	await storeDocument(url.href, await response.text(), response.headers);
 }
 
-/** Messages from app.js: documents of boosted navigations, and pages to keep ahead of time. */
+/**
+ * A download link is a navigation the worker never sees, so the page names the
+ * attachment it just downloaded and the worker fetches its own copy, within the
+ * size cap.
+ */
+async function keepFile(href) {
+	const url = new URL(href, self.location.origin);
+	if (url.origin !== self.location.origin || Offline.cacheKind(url) !== "file" || !(await currentUserCache())) return;
+	const response = await fetch(url.href, { credentials: "same-origin" });
+	if (response.status !== 200 || response.redirected) return;
+	await storeMail(url, "file", response);
+}
+
+/** Messages from app.js: documents of boosted navigations, and pages and files to keep ahead of time. */
 self.addEventListener("message", (event) => {
 	const data = event.data;
 	if (!data || typeof data !== "object" || typeof data.url !== "string") return;
 	if (data.type === "store-page" && typeof data.html === "string") event.waitUntil(storeDocument(data.url, data.html, null).catch(() => false));
 	else if (data.type === "warm") event.waitUntil(warmPage(data.url).catch(() => {}));
+	else if (data.type === "keep-file") event.waitUntil(keepFile(data.url).catch(() => {}));
 });
 
 /* ---------- queued actions ----------

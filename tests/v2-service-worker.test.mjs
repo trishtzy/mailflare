@@ -193,6 +193,19 @@ test("pages come from the network while online, and the offline page stands in w
 	assert.match(await (await dispatchFetch(offline, "/v2-assets/app.js?v=7", { mode: "no-cors", destination: "script" })).text(), /cached/);
 });
 
+test("the offline page is served as a fresh response even when its precached copy was redirected", async () => {
+	const worker = await installed({ online: false });
+	// Workers static assets answer /v2-assets/offline.html with a 307 to /v2-assets/offline.
+	const cache = worker.stores.get("mf-static-7-2.0.11");
+	const redirected = new Response("<h1>You're offline</h1>", { headers: { "Content-Type": "text/html" } });
+	Object.defineProperty(redirected, "redirected", { value: true });
+	cache.entries.set(`${ORIGIN}/v2-assets/offline.html`, { clone: () => redirected });
+	const page = await dispatchFetch(worker, "/v2/sent");
+	assert.equal(page.redirected, false, "a navigation rejects a redirected response");
+	assert.equal(page.status, 200);
+	assert.equal(await page.text(), "<h1>You're offline</h1>");
+});
+
 test("a signed-in page is cached for its user and served, marked with its age, when the network fails", async () => {
 	const worker = await installed({ respond: (request) => served(doc("usr_a", new URL(request.url).pathname)) });
 	const live = await dispatchFetch(worker, "/v2/inbox");
@@ -278,7 +291,7 @@ test("mail bodies are cached for the user named in their response and served off
 test("attachments join the signed-in user's cache, within the size cap, and only once a user cache exists", async () => {
 	let size = 1024;
 	const worker = await installed({
-		respond: (request) => new URL(request.url).pathname.startsWith("/api/")
+		respond: (request) => new URL(typeof request === "string" ? request : request.url).pathname.startsWith("/api/")
 			? served(new Uint8Array(size), { headers: { "Content-Type": "application/pdf", "Content-Length": String(size) } })
 			: served(doc("usr_a")),
 	});
@@ -294,9 +307,18 @@ test("attachments join the signed-in user's cache, within the size cap, and only
 	await worker.idle();
 	assert.deepEqual(cachedPaths(worker, "mf-user-usr_a"), ["/v2/inbox", "/api/messages/msg_1/attachments/att_1?download=1"]);
 
+	// Downloads are navigations the worker never sees; the page asks it to keep a copy.
+	size = 2048;
+	await message(worker, { type: "keep-file", url: `${ORIGIN}/api/messages/msg_2/attachments/att_2?download=1` });
+	await message(worker, { type: "keep-file", url: `${ORIGIN}/v2/inbox` });
+	await message(worker, { type: "keep-file", url: "https://evil.example/api/messages/msg_3/attachments/att_3" });
+	assert.deepEqual(cachedPaths(worker, "mf-user-usr_a"), ["/v2/inbox", "/api/messages/msg_1/attachments/att_1?download=1", "/api/messages/msg_2/attachments/att_2?download=1"]);
+
 	worker.network.online = false;
 	const file = await dispatchFetch(worker, "/api/messages/msg_1/attachments/att_1", { mode: "no-cors", destination: "image" });
 	assert.equal((await file.arrayBuffer()).byteLength, 1024, "an inline image finds the downloaded file");
+	const kept = await dispatchFetch(worker, "/api/messages/msg_2/attachments/att_2?download=1", { mode: "cors", destination: "" });
+	assert.equal((await kept.arrayBuffer()).byteLength, 2048, "the page's offline download finds the kept copy");
 });
 
 test("each kind of cached entry keeps only its most recent ones", async () => {
