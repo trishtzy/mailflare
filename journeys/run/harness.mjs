@@ -687,11 +687,12 @@ export class Device {
 		// device), and a touch on the page's old layout then presses a key instead (#53): wait for the page.
 		let page, box, point;
 		const deadline = Date.now() + 8_000;
-		for (;;) {
+		for (let waited = false; ; waited = true) {
 			({ page, box } = await this.locate(target, options));
 			point = await this.toScreen(page, box.x, box.y);
 			if (!inRegion(await this.keyboardRegion(), point.x, point.y)) break;
 			if (Date.now() > deadline) fail(`${what} is covered by the on-screen keyboard`);
+			if (!waited) this.log(`  ${what} is under the on-screen keyboard; waiting for the page to make room`);
 			await sleep(250);
 		}
 		await this.evaluate(page, () => {
