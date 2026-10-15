@@ -132,7 +132,21 @@ const journey = {
 			"Verify that Chrome comes to the front showing Mailflare's conversation view of that message, with its subject as the heading",
 			async ({ device, state }) => {
 				await device.page({ timeout: 30_000 });
-				await device.until((subject) => /^\/v2\/inbox\/[^/]+$/.test(location.pathname) && window.__j.byText("h1.thread-subject", subject), state.first, { timeout: 20_000, message: `the conversation "${state.first}"` });
+				await device.until((subject) => /^\/v2\/inbox\/[^/]+$/.test(location.pathname) && window.__j.byText("h1.thread-subject", subject), state.first, { timeout: 20_000, message: `the conversation "${state.first}"` }).catch(async (error) => {
+					// What the page went through since the tap (read only; nothing could watch before it, see detach).
+					const seen = await device.eval(() => {
+						const nav = performance.getEntriesByType("navigation")[0];
+						const at = (ms) => Math.round(performance.timeOrigin + ms - Date.now());
+						return {
+							href: location.href,
+							history: [history.length, JSON.stringify(history.state)],
+							discarded: document.wasDiscarded ?? null,
+							document: nav ? `${nav.type}, loaded ${-at(0)} ms ago` : null,
+							requests: performance.getEntriesByType("resource").filter((e) => /\/v2\/(?!assets)|\/api\/realtime/.test(e.name)).slice(-8).map((e) => `${at(e.startTime)} ms ${new URL(e.name).pathname}${new URL(e.name).search} (${e.initiatorType})`),
+						};
+					}).catch((e) => `unreadable: ${e.message}`);
+					fail(`${error.message}; the page: ${JSON.stringify(seen)}`);
+				});
 				// SystemUI reports the shade's state a moment late.
 				await waitFor(async () => !(await device.shadeOpen()), { timeout: 5_000, message: "the notification shade to close" });
 			},
