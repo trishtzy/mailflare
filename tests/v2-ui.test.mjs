@@ -570,7 +570,7 @@ test("on a phone every list action fits: the pager hides while selecting and the
 	assert.match(phoneBlock, /\.tb-more \{ display: block; \}/);
 	assert.match(phoneBlock, /body:has\(#main details\.menu\[open\]\) \.fab \{ display: none; \}/, "the compose button stays off an open sheet");
 	assert.match(css, /\.has-selection \.tb-idle \{ display: none; \}\n(\/\*.*\*\/\n)?\.tb-more \{ display: none; \}/, "More is hidden outside phones, next to the other selection rules");
-	assert.match(phone, /@media \(max-width: 389px\) \{\s*\.tb-count-label \{ display: none; \}/);
+	assert.match(phone, /@media \(max-width: 389px\) \{\s*\.tb-count-label \{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect\(0 0 0 0\);/, "the word is clipped, not removed");
 	assert.match(appJs, /className: "tb-count-label", textContent: " selected"/, "app.js writes the count as number + label");
 
 	const ctx = { user: { id: "usr_1", email: "me@example.com", name: "Me" }, url: new URL("https://mail.example.com/v2/inbox"), mailboxes: [], scopeMailboxIds: ["mbx_1"] };

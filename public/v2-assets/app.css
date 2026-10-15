@@ -934,9 +934,9 @@ body.is-loading .progress { opacity: 1; transform: scaleX(.7); transition: trans
 	.app { height: calc(100dvh - var(--kb, 0px)); }
 }
 
-/* The narrowest phones: "3", not "3 selected", so every action still fits. */
+/* The narrowest phones show "3", not "3 selected", so every action still fits; screen readers still hear the word. */
 @media (max-width: 389px) {
-	.tb-count-label { display: none; }
+	.tb-count-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 
 @media (max-width: 1199px) {
