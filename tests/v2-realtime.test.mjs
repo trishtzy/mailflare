@@ -18,8 +18,8 @@ const end = source.indexOf("/* pure:end */");
 assert.ok(start > 0 && end > start, "app.js keeps its pure:start / pure:end markers");
 const context = vm.createContext({});
 vm.runInContext(`${source.slice(start, end)}
-	this.helpers = { realtimeStep };`, context);
-const { realtimeStep } = context.helpers;
+	this.helpers = { realtimeStep, staleBackgroundAnswer };`, context);
+const { realtimeStep, staleBackgroundAnswer } = context.helpers;
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 test("a page that is hidden closes its socket, so the server pushes new mail instead", () => {
@@ -44,4 +44,17 @@ test("a reconnect timer that fires while the page is hidden, or after it reconne
 	assert.equal(realtimeStep("retry", { visible: true, socket: false }).connect, true);
 	assert.equal(realtimeStep("retry", { visible: false, socket: false }).connect, false);
 	assert.equal(realtimeStep("retry", { visible: true, socket: true }).connect, false);
+});
+
+test("a background reload's answer is dropped once the page it was sent from is left", () => {
+	const inbox = { href: "http://localhost/v2/inbox", navigations: 3, loading: 0 };
+	assert.equal(staleBackgroundAnswer(inbox, { ...inbox }), false);
+	// A notification opened a conversation after the reload was sent: the answer lands after it is shown.
+	assert.equal(staleBackgroundAnswer(inbox, { href: "http://localhost/v2/inbox/msg_1", navigations: 4, loading: 0 }), true);
+	// The conversation is still loading (the address has not changed yet).
+	assert.equal(staleBackgroundAnswer(inbox, { href: inbox.href, navigations: 4, loading: 1 }), true);
+	// New mail arrived while the conversation was loading: the reload was sent after the navigation started.
+	assert.equal(staleBackgroundAnswer({ ...inbox, navigations: 4 }, { href: inbox.href, navigations: 4, loading: 1 }), true);
+	// Left and back at the same address: still another page load since.
+	assert.equal(staleBackgroundAnswer(inbox, { href: inbox.href, navigations: 5, loading: 0 }), true);
 });

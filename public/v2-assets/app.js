@@ -612,6 +612,16 @@
 		return {};
 	}
 
+	/**
+	 * Whether the answer to a background request (a quiet reload, a sidebar poll) is stale: it
+	 * re-renders the page it was sent from, so once the address has changed, or another page has
+	 * started loading since it was sent or is loading now (a link, a notification opened), swapping
+	 * it in would put the old page back, and would drop the loading page's link with its answer.
+	 */
+	function staleBackgroundAnswer(sentFrom, now) {
+		return now.loading > 0 || sentFrom.href !== now.href || sentFrom.navigations !== now.navigations;
+	}
+
 	/* pure:end */
 
 	const coarsePointer = window.matchMedia("(pointer: coarse)");
@@ -1777,14 +1787,32 @@
 
 	/* ---------- live updates ---------- */
 
+	// Background requests answer for the page they were sent from (see staleBackgroundAnswer).
+	let navigations = 0;
+	let loading = 0;
+	const here = () => ({ href: location.href, navigations, loading });
+	document.addEventListener("htmx:beforeSend", (event) => {
+		const { xhr, requestConfig: config } = event.detail;
+		if (!xhr) return;
+		if (config?.boosted && config.verb === "get") {
+			navigations++;
+			loading++;
+			xhr.addEventListener("loadend", () => loading--, { once: true });
+		} else if (isBackground(config)) {
+			xhr.mfSentFrom = here();
+		}
+	});
+	document.addEventListener("htmx:beforeSwap", (event) => {
+		const sentFrom = event.detail.xhr?.mfSentFrom;
+		if (sentFrom && staleBackgroundAnswer(sentFrom, here())) event.detail.shouldSwap = false;
+	});
+
 	function refreshQuietly() {
 		// Replayed actions must reach the server before the list is reloaded.
 		if (deferRefreshUntilDrained()) return;
 		if (body.dataset.cachedAt) return refreshCachedPage();
 		// It could only fail; coming back online reloads.
 		if (!navigator.onLine) return;
-		// A link being followed brings a fresh page; a reload landing after it would put the old one back.
-		if ($("#main a.htmx-request")) return;
 		const kind = pageKind();
 		const busy = selectedIds().length || $("details.menu[open]") || isTyping(document.activeElement);
 		const path = `${location.pathname}${location.search}`;
@@ -2065,8 +2093,7 @@
 		if (typeof url !== "string") return;
 		const target = new URL(url, location.href);
 		if (target.origin !== location.origin || !target.pathname.startsWith("/v2/")) return;
-		// Focusing the page to open the message also starts its quiet reload (visibilitychange): drop it.
-		window.htmx.trigger(body, "htmx:abort");
+		// Focusing the page also starts its quiet reload (visibilitychange): its answer is dropped as stale.
 		navigate(`${target.pathname}${target.search}`);
 	});
 
