@@ -307,7 +307,7 @@ export class Device {
 			// Confirm from the page that the server really is out of reach.
 			const page = await this.page().catch(() => null);
 			if (page) {
-				const reached = await page.evaluate(() => fetch(`/login?offline-check=${Date.now()}`, { cache: "no-store" }).then(() => true, () => false)).catch(() => false);
+				const reached = await this.evaluate(page, () => fetch(`/login?offline-check=${Date.now()}`, { cache: "no-store" }).then(() => true, () => false)).catch(() => false);
 				if (reached) fail("the page can still reach the server after going offline");
 			}
 		}
@@ -403,7 +403,7 @@ export class Device {
 				if (candidates.length <= 1) return candidates[0] ?? null;
 				const painting = [];
 				for (const p of candidates) {
-					const frame = await p.evaluate(() => Promise.race([new Promise((r) => requestAnimationFrame(() => r(document.visibilityState === "visible"))), new Promise((r) => setTimeout(() => r(false), 400))])).catch(() => false);
+					const frame = await this.evaluate(p, () => Promise.race([new Promise((r) => requestAnimationFrame(() => r(document.visibilityState === "visible"))), new Promise((r) => setTimeout(() => r(false), 400))])).catch(() => false);
 					if (frame) painting.push(p);
 				}
 				const front = painting.at(-1) ?? null;
@@ -424,8 +424,30 @@ export class Device {
 
 	async eval(fn, arg, { page } = {}) {
 		const p = page ?? (await this.page());
-		await p.evaluate(PAGE_HELPERS);
-		return p.evaluate(fn, arg);
+		await this.evaluate(p, PAGE_HELPERS);
+		return this.evaluate(p, fn, arg);
+	}
+
+	/**
+	 * page.evaluate with a deadline. A DevTools call to a page that went away (Chrome restarted, the tab
+	 * replaced) can wait forever, which turned a 30 s wait into a step timed out with no reason. Past the
+	 * deadline the connection is dropped, so the next lookup connects afresh, and the error says what is
+	 * in front; it is a plain Error, so waitFor keeps polling until its own deadline.
+	 */
+	async evaluate(page, fn, arg, { timeout = 10_000 } = {}) {
+		let timer;
+		const call = page.evaluate(fn, arg);
+		call.catch(() => {});
+		try {
+			return await Promise.race([call, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("timeout")), timeout)))]);
+		} catch (error) {
+			if (error.message !== "timeout") throw error;
+			this.browser = null;
+			const front = (await this.shell("dumpsys window 2>/dev/null | grep -m1 mCurrentFocus").catch(() => "")).trim().replace(/^.*\{[^ ]+ u0 /, "").replace(/\}$/, "");
+			throw new Error(`Chrome DevTools did not answer within ${timeout / 1000} s (in front: ${front || "unknown"})`);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	/** Waits until `fn` (run in the page with window.__j helpers) returns something truthy. Survives navigations. */
@@ -455,15 +477,15 @@ export class Device {
 	async calibrate(page, retry = 0) {
 		const known0 = this.calibration.get(page);
 		if (!known0 || retry) await this.settle();
-		const key = await page.evaluate(() => [innerWidth, innerHeight, visualViewport.offsetTop, visualViewport.offsetLeft, visualViewport.scale, matchMedia("(display-mode: standalone)").matches].join("|"));
+		const key = await this.evaluate(page, () => [innerWidth, innerHeight, visualViewport.offsetTop, visualViewport.offsetLeft, visualViewport.scale, matchMedia("(display-mode: standalone)").matches].join("|"));
 		if (!retry && known0?.key === key) return known0;
 		const sx = this.width / 2;
 		const sy = this.height * 0.3;
 		// An earlier calibration tap on this document may have arrived after its wait: use it, not another tap.
-		let hit = await page.evaluate(() => (window.__jCalState && !window.__jCalState.done ? window.__jCalState.point : null)).catch(() => null);
+		let hit = await this.evaluate(page, () => (window.__jCalState && !window.__jCalState.done ? window.__jCalState.point : null)).catch(() => null);
 		if (hit) this.log("  the earlier calibration tap reached the page late; using it");
 		if (!hit) {
-			await page.evaluate(() => {
+			await this.evaluate(page, () => {
 				// Every calibration tap sent to this document is swallowed, including one that arrives late
 				// next to its retry: a calibration tap must never reach the app.
 				const state = window.__jCalState;
@@ -494,13 +516,13 @@ export class Device {
 				});
 			});
 			await this.tapScreen(sx, sy);
-			hit = await waitFor(() => page.evaluate(() => Promise.race([window.__jCal, new Promise((r) => setTimeout(() => r(null), 500))])), {
+			hit = await waitFor(() => this.evaluate(page, () => Promise.race([window.__jCal, new Promise((r) => setTimeout(() => r(null), 500))])), {
 				timeout: 3_000,
 				message: "the calibration tap to reach the page (is native UI covering it?)",
 			}).catch(() => null);
 		}
 		if (!hit && retry >= 2) {
-			await page.evaluate(() => window.__jCalState?.finish?.()).catch(() => {});
+			await this.evaluate(page, () => window.__jCalState?.finish?.()).catch(() => {});
 			fail(`the calibration tap did not reach the page; ${await this.diagnoseTouch(sx, sy)}`);
 		}
 		// A document that replaced the page after the listener went in (a service worker taking over, say)
@@ -510,8 +532,8 @@ export class Device {
 			return this.calibrate(page, retry + 1);
 		}
 		// Calibrated: stop swallowing. A tap that was dropped for good must not swallow the app's next touch.
-		await page.evaluate(() => window.__jCalState?.finish?.()).catch(() => {});
-		const dpr = await page.evaluate(() => devicePixelRatio);
+		await this.evaluate(page, () => window.__jCalState?.finish?.()).catch(() => {});
+		const dpr = await this.evaluate(page, () => devicePixelRatio);
 		const cal = { key, dpr, offX: sx - hit.clientX * dpr, offY: sy - hit.clientY * dpr };
 		this.calibration.set(page, cal);
 		return cal;
@@ -522,13 +544,13 @@ export class Device {
 		const parts = [];
 		try {
 			const pages = this.pages();
-			await Promise.all(pages.map((p) => p.evaluate(() => {
+			await Promise.all(pages.map((p) => this.evaluate(p, () => {
 				window.__jSeen = [];
 				for (const type of ["pointerdown", "touchstart"]) addEventListener(type, () => window.__jSeen.push(type), { capture: true });
 			}).catch(() => {})));
 			await this.tapScreen(x, y);
 			await sleep(800);
-			const seen = await Promise.all(pages.map(async (p) => `${p.url()} [${await p.evaluate(() => `${document.visibilityState}, ${document.hasFocus() ? "focused" : "unfocused"}, ${window.__jSeen.join("+") || "no touch"}`).catch((e) => e.message.slice(0, 40))}]`));
+			const seen = await Promise.all(pages.map(async (p) => `${p.url()} [${await this.evaluate(p, () => `${document.visibilityState}, ${document.hasFocus() ? "focused" : "unfocused"}, ${window.__jSeen.join("+") || "no touch"}`).catch((e) => e.message.slice(0, 40))}]`));
 			parts.push(`pages: ${seen.join("; ")}`);
 			parts.push((await this.shell("dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -2")).replace(/\s+/g, " ").trim());
 			parts.push(`input: ${(await this.shell("dumpsys input 2>/dev/null | grep -E 'FocusedWindow|FocusedApplication' | head -3")).replace(/\s+/g, " ").trim()}`);
@@ -556,8 +578,8 @@ export class Device {
 		let covered = null;
 		const box = await waitFor(
 			async () => {
-				await page.evaluate(PAGE_HELPERS);
-				const found = await page.evaluate(({ selector, text, index }) => {
+				await this.evaluate(page, PAGE_HELPERS);
+				const found = await this.evaluate(page, ({ selector, text, index }) => {
 					const pattern = text && text.source !== undefined ? new RegExp(text.source, text.flags) : text;
 					let el;
 					if (pattern !== undefined) el = window.__j.byText(selector ?? "*", pattern);
@@ -648,13 +670,13 @@ export class Device {
 	async lateTouch() {
 		await sleep(1_500);
 		const page = await this.page().catch(() => null);
-		return page ? page.evaluate(() => window.__jTap ?? null).catch(() => null) : null;
+		return page ? this.evaluate(page, () => window.__jTap ?? null).catch(() => null) : null;
 	}
 
 	async tapOnce(target, options = {}) {
 		const { page, box } = await this.locate(target, options);
 		const point = await this.toScreen(page, box.x, box.y);
-		await page.evaluate(() => {
+		await this.evaluate(page, () => {
 			window.__jTap = null;
 			addEventListener("pointerdown", (event) => {
 				window.__jTap = { hit: window.__jTarget?.contains(event.target) || event.target.contains?.(window.__jTarget), on: window.__j.describe(event.target) };
@@ -664,7 +686,7 @@ export class Device {
 		// The touch arrives a moment after `input tap` returns; a navigation it starts ends the check.
 		let landed;
 		for (let i = 0; i < 15 && !landed; i++) {
-			landed = await page.evaluate(() => window.__jTap).catch(() => undefined);
+			landed = await this.evaluate(page, () => window.__jTap).catch(() => undefined);
 			if (landed === undefined) break;
 			if (!landed) await sleep(100);
 		}
@@ -734,13 +756,13 @@ export class Device {
 	async signIn() {
 		let page = await this.page().catch(() => null);
 		if (!page) page = await this.goto(BLANK);
-		const status = await page.evaluate(async (login) => (await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(login) })).status, LOGIN);
+		const status = await this.evaluate(page, async (login) => (await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(login) })).status, LOGIN);
 		if (status !== 200) fail(`sign-in for setup answered ${status}`);
 	}
 
 	async signOut() {
 		const page = await this.page();
-		await page.evaluate(() => fetch("/api/auth/logout", { method: "POST" }).catch(() => {}));
+		await this.evaluate(page, () => fetch("/api/auth/logout", { method: "POST" }).catch(() => {}));
 		await page.context().clearCookies();
 	}
 
@@ -749,13 +771,13 @@ export class Device {
 		await this.goto(BLANK);
 		await this.signIn();
 		let page = await this.goto(`${APP}/v2/inbox`);
-		const count = await page.evaluate(() => document.querySelectorAll("li[data-row]").length);
+		const count = await this.evaluate(page, () => document.querySelectorAll("li[data-row]").length);
 		if (count < rows) {
 			await this.deliverMail(rows - count);
 			// Delivery goes through the inbound queue: wait until the list has the new mail.
 			await waitFor(async () => {
 				page = await this.goto(`${APP}/v2/inbox`);
-				return (await page.evaluate(() => document.querySelectorAll("li[data-row]").length)) >= rows;
+				return (await this.evaluate(page, () => document.querySelectorAll("li[data-row]").length)) >= rows;
 			}, { timeout: 30_000, interval: 1_000, message: `${rows} conversations in the inbox after delivering mail` });
 		}
 		if (path !== "/v2/inbox") await this.goto(`${APP}${path}`);
@@ -769,7 +791,7 @@ export class Device {
 	 */
 	async ensureServiceWorker() {
 		let page = await this.page();
-		await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+		await this.evaluate(page, () => navigator.serviceWorker.ready.then(() => true), undefined, { timeout: 30_000 });
 		await page.reload({ waitUntil: "load" });
 		page = await this.page();
 		await this.until(async () => {

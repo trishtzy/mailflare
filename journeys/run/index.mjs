@@ -274,6 +274,16 @@ async function capture(id, step, into) {
 	} catch (error) {
 		log(`  (screenshot failed: ${error.message})`);
 	}
+	// Whether an app crashed (Chrome leaving the screen mid-step, say): Android's crash log, if it has anything.
+	try {
+		const crashes = (await device.shell("logcat -d -b crash 2>/dev/null | tail -200")).trim();
+		if (crashes) {
+			writeFileSync(join(out, `screens/${id}-${step}-crash.txt`), `${crashes}\n`);
+			into.crashLog = `screens/${id}-${step}-crash.txt`;
+		}
+	} catch {
+		/* no crash log to add */
+	}
 }
 
 const started = Date.now();

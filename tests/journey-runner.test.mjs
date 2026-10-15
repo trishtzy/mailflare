@@ -75,3 +75,23 @@ test("run warnings are shown above the results, and only when there are some", (
 	assert.doesNotMatch(markdownSummary([passed], { warnings: [] }), /WARNING/);
 	assert.doesNotMatch(markdownSummary([passed]), /WARNING/);
 });
+
+test("a failed action names its Android crash log when there is one", () => {
+	const failed = { id: "20-a", name: "A", error: "x", steps: [{ label: "Do it", status: "failed", error: "x", screenshot: "screens/20-a-1.png", crashLog: "screens/20-a-1-crash.txt" }], durationMs: 1000 };
+	assert.match(markdownSummary([failed]), /- Screenshot: `screens\/20-a-1\.png`\n {3}- Android crash log: `screens\/20-a-1-crash\.txt`/);
+});
+
+test("a DevTools call that never answers fails after its deadline and drops the connection", async () => {
+	const { Device } = await import("../journeys/run/harness.mjs");
+	const device = new Device({});
+	device.browser = { stale: true };
+	device.shell = async () => "  mCurrentFocus=Window{1a2b u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}";
+	const hung = { evaluate: () => new Promise(() => {}) };
+	await assert.rejects(device.evaluate(hung, () => 1, undefined, { timeout: 50 }), /did not answer within 0\.05 s \(in front: com\.google\.android\.apps\.nexuslauncher\/com\.google\.android\.apps\.nexuslauncher\.NexusLauncherActivity\)/);
+	assert.equal(device.browser, null, "the next lookup connects afresh");
+
+	device.browser = { live: true };
+	assert.equal(await device.evaluate({ evaluate: async (fn, arg) => fn(arg) }, (n) => n + 1, 1), 2);
+	await assert.rejects(device.evaluate({ evaluate: async () => { throw new Error("Execution context was destroyed"); } }, () => 1), /context was destroyed/, "other errors pass through");
+	assert.deepEqual(device.browser, { live: true }, "and keep the connection");
+});

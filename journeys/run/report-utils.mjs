@@ -91,6 +91,7 @@ export function markdownSummary(results, meta = {}) {
 			if (s.status === "known") lines.push(`   - Known issue: ${r.knownIssue?.issue}`);
 			if (s.error) lines.push(`   - ${oneLine(s.error)}`);
 			if (s.screenshot) lines.push(`   - Screenshot: \`${s.screenshot}\``);
+			if (s.crashLog) lines.push(`   - Android crash log: \`${s.crashLog}\``);
 		});
 	}
 	return `${lines.join("\n")}\n`;
