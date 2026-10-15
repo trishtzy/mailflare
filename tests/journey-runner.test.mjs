@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { junitXml, markdownSummary, outcome, parseJourney, runFails, shardOf } from "../journeys/run/report-utils.mjs";
+import { displayOverrides, junitXml, markdownSummary, outcome, parseJourney, runFails, shardOf } from "../journeys/run/report-utils.mjs";
 
 const journeysDir = join(dirname(fileURLToPath(import.meta.url)), "..", "journeys");
 const journeys = readdirSync(journeysDir)
@@ -56,4 +56,22 @@ test("only a real failure, a fixed known issue or (outside drafts) an unscripted
 	const xml = junitXml([passed, known, failed]);
 	assert.match(xml, /tests="4" failures="1" skipped="1"/);
 	assert.match(xml, /<skipped message="known issue: #19">/);
+});
+
+test("a display override left by an interrupted journey is recognised, and only an override", () => {
+	// What `wm size` and `wm density` print on the CI image, with and without an override (journey 17 sets one).
+	const size = "Physical size: 1080x2400\nOverride size: 1280x800\n";
+	const density = "Physical density: 420\r\nOverride density: 200\r\n";
+	assert.deepEqual(displayOverrides(size, density), ["size 1280x800 (physical 1080x2400)", "density 200 (physical 420)"]);
+	assert.deepEqual(displayOverrides("Physical size: 1080x2400\n", density), ["density 200 (physical 420)"]);
+	assert.deepEqual(displayOverrides("Physical size: 1080x2400\n", "Physical density: 420\n"), []);
+	assert.deepEqual(displayOverrides("", undefined), [], "no output (adb failed) is not an override");
+});
+
+test("run warnings are shown above the results, and only when there are some", () => {
+	const passed = { id: "01-a", name: "A", steps: [{ label: "Do it", status: "passed" }], durationMs: 1000 };
+	const warned = markdownSummary([passed], { warnings: ["The display was overridden (size 1280x800) before 01-a, left by an interrupted journey; it was reset."] });
+	assert.match(warned, /\n> \[!WARNING\]\n> The display was overridden \(size 1280x800\) before 01-a, .*\n\n\| Journey \| Result \|/);
+	assert.doesNotMatch(markdownSummary([passed], { warnings: [] }), /WARNING/);
+	assert.doesNotMatch(markdownSummary([passed]), /WARNING/);
 });

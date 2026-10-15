@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 import { _android, chromium } from "playwright-core";
+import { displayOverrides } from "./report-utils.mjs";
 
 const exec = promisify(execFile);
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -143,6 +144,19 @@ export class Device {
 	 * connection through it and refuses new ones: Airplane mode does not touch the adb reverse tunnel,
 	 * and Chrome keeps connections alive, so removing the tunnel alone left pages able to reach the server.
 	 */
+	/**
+	 * Puts the display back to the device's own size and density if something left it overridden (a
+	 * journey that changes it, cut off before its teardown), and returns what was overridden ([] if nothing).
+	 */
+	async resetDisplay() {
+		const overrides = displayOverrides(await this.shell("wm size"), await this.shell("wm density"));
+		if (overrides.length) await this.shell("wm size reset && wm density reset");
+		const size = (await this.shell("wm size")).match(/(\d+)x(\d+)\s*$/m);
+		this.width = Number(size[1]);
+		this.height = Number(size[2]);
+		return overrides;
+	}
+
 	async startRelay() {
 		this.relayOffline = false;
 		this.relaySockets = new Set();
