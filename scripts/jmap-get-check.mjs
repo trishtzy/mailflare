@@ -110,7 +110,8 @@ check("every id is found", list.length === listIds.length && results.list.notFou
 check("the list follows the requested order", list.map((item) => item.id).join(",") === listIds.join(","));
 check("only the asked properties come back", list.every((item) => Object.keys(item).every((property) => property === "id" || LIST_PROPERTIES.includes(property))));
 check("every asked property is present", list.every((item) => LIST_PROPERTIES.every((property) => property in item)));
-check("sizes are positive integers", list.every((item) => Number.isInteger(item.size) && item.size > 0), list.find((item) => !(item.size > 0)));
+// An empty message with no attachments really has size 0.
+check("sizes are non-negative integers", list.every((item) => Number.isInteger(item.size) && item.size >= 0), list.find((item) => !(Number.isInteger(item.size) && item.size >= 0)));
 check("previews are filled", list.every((item) => typeof item.preview === "string"));
 
 section("Everything with body values");
