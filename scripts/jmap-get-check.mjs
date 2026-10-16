@@ -107,6 +107,7 @@ for (const [name, call] of Object.entries(shapes)) {
 section("Metadata list fetch");
 const list = results.list.list ?? [];
 check("every id is found", list.length === listIds.length && results.list.notFound?.length === 0, { found: list.length, notFound: results.list.notFound });
+check("the list follows the requested order", list.map((item) => item.id).join(",") === listIds.join(","));
 check("only the asked properties come back", list.every((item) => Object.keys(item).every((property) => property === "id" || LIST_PROPERTIES.includes(property))));
 check("every asked property is present", list.every((item) => LIST_PROPERTIES.every((property) => property in item)));
 check("sizes are positive integers", list.every((item) => Number.isInteger(item.size) && item.size > 0), list.find((item) => !(item.size > 0)));
@@ -169,8 +170,13 @@ if (process.env.SAVE_FIXTURE) {
 if (process.env.COMPARE_FIXTURE) {
 	section(`Compared with ${process.env.COMPARE_FIXTURE}`);
 	const saved = JSON.parse(readFileSync(process.env.COMPARE_FIXTURE, "utf8"));
+	// List order is compared apart: a server is free to answer in any order, and
+	// this one now follows the requested ids, which an older build did not.
+	const byId = (body) => JSON.stringify({ ...body, list: [...(body.list ?? [])].sort((a, b) => (a.id < b.id ? -1 : 1)) });
 	for (const name of Object.keys(shapes)) {
-		check(`${name}: identical response`, JSON.stringify(saved[name]) === JSON.stringify(results[name]), "diff the two files");
+		check(`${name}: identical response, list order aside`, byId(saved[name]) === byId(results[name]), "diff the two files");
+		const order = (body) => (body.list ?? []).map((item) => item.id).join(",");
+		console.log(`       list order ${order(saved[name]) === order(results[name]) ? "also identical" : "differs"}`);
 	}
 }
 

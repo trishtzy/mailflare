@@ -100,19 +100,28 @@ function lightMessageColumns() {
  * Rows for `ids` the account can see. With `bodies: false` the text and HTML
  * bodies stay in the database (see `lightMessageColumns`); the row's
  * `textBody` is then null. Ids are split into IN lists D1 can bind next to
- * the scope's own parameters.
+ * the scope's own parameters; rows come back once each, in the order of
+ * `ids`, whatever plan or chunking produced them.
  */
 export async function loadMessages(ctx: JmapContext, ids: string[], options: { bodies?: boolean } = {}): Promise<MessageRow[]> {
 	if (ids.length === 0) return [];
-	const { ids: scopeIds, condition } = await scope(ctx);
-	const chunks = chunkForParameters(ids, Math.max(scopeIds.length, 1));
+	const { ids: scopeIds } = await scope(ctx);
+	// The same rows as scope(), but the unary + keeps the mailbox (or user) term
+	// out of index selection, so SQLite looks each id up by primary key instead
+	// of walking every message the account can see and filtering by id.
+	const condition = scopeIds.length ? inArray(sql`+${messages.mailboxId}`, scopeIds) : sql`+${messages.userId} = ${ctx.auth.userId}`;
+	const unique = Array.from(new Set(ids));
+	const chunks = chunkForParameters(unique, Math.max(scopeIds.length, 1));
+	let rows: MessageRow[];
 	if (options.bodies === false) {
 		const columns = lightMessageColumns();
-		const rows = await Promise.all(chunks.map((part) => ctx.db.select(columns).from(messages).where(and(condition, inArray(messages.id, part)))));
-		return rows.flat().map((row) => ({ ...row, textBody: null }));
+		const found = await Promise.all(chunks.map((part) => ctx.db.select(columns).from(messages).where(and(condition, inArray(messages.id, part)))));
+		rows = found.flat().map((row) => ({ ...row, textBody: null }));
+	} else {
+		rows = (await Promise.all(chunks.map((part) => ctx.db.select().from(messages).where(and(condition, inArray(messages.id, part)))))).flat();
 	}
-	const rows = await Promise.all(chunks.map((part) => ctx.db.select().from(messages).where(and(condition, inArray(messages.id, part)))));
-	return rows.flat();
+	const byId = new Map(rows.map((row) => [row.id, row]));
+	return unique.flatMap((id) => byId.get(id) ?? []);
 }
 
 export const emailGet: JmapMethodHandler = async (ctx, args) => {
@@ -131,7 +140,7 @@ export const emailGet: JmapMethodHandler = async (ctx, args) => {
 		found.add(row.id);
 		return pickEmailProperties(row, attachments.get(row.id) ?? [], properties, { fetchBodies, maxBodyValueBytes, bodiesLoaded });
 	});
-	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: ids.filter((id) => !found.has(id)) };
+	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: Array.from(new Set(ids)).filter((id) => !found.has(id)) };
 };
 
 /** The WHERE and ORDER BY an Email/query's filter and sort describe, within the accessible mailboxes. */

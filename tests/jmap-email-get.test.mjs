@@ -157,6 +157,8 @@ function resultBytes({ sql, params }) {
 }
 
 const ids = {};
+/** 200 plain messages, inserted by the 200-id test and reused after it. */
+const many = [];
 
 before(async () => {
 	database = new m.SqliteDatabase(":memory:");
@@ -321,7 +323,6 @@ test("body properties still read the bodies and keep each part's own size", asyn
 });
 
 test("Email/get of 200 ids splits its lookups to stay within D1's parameter limit", async () => {
-	const many = [];
 	for (let index = 0; index < 200; index += 1) many.push(await insertMessage());
 	let result;
 	const statements = await recordStatements(async () => {
@@ -334,4 +335,29 @@ test("Email/get of 200 ids splits its lookups to stay within D1's parameter limi
 	assert.equal(new Set(result.list.map((item) => item.id)).size, 200, "no row twice");
 	const unknown = await call("Email/get", { ids: [...many.slice(0, 120), "msg_missing"], properties: ["id"] });
 	assert.deepEqual(unknown.notFound, ["msg_missing"]);
+});
+
+test("Email/get looks messages up by id and still only returns the account's own", async () => {
+	await db.insert(m.users).values({ id: "usr_other", email: "other@example.test", passwordHash: "x", name: "Other" });
+	await db.insert(m.mailboxes).values({ id: "mbx_other", userId: "usr_other", domainId: "dom_test", localPart: "other" });
+	// A second mailbox of the user's, so the scope is an IN list as on a real account.
+	await db.insert(m.mailboxes).values({ id: "mbx_second", userId: USER.id, domainId: "dom_test", localPart: "second" });
+	const foreign = await insertMessage({ userId: "usr_other", mailboxId: "mbx_other" });
+	let result;
+	const statements = await recordStatements(async () => {
+		result = await call("Email/get", { ids: [...many.slice(0, 40), foreign], properties: LIST_PROPERTIES });
+	});
+	assert.deepEqual(result.list.map((item) => item.id).sort(), many.slice(0, 40).sort());
+	assert.deepEqual(result.notFound, [foreign], "another account's message is not found");
+	const select = statements.find((statement) => /from "messages"/.test(statement.sql));
+	const plan = database.db.prepare(`EXPLAIN QUERY PLAN ${select.sql}`).all(...select.params).map((row) => row.detail).join("\n");
+	// Without the unary + SQLite (no ANALYZE stats, as on D1) picks the mailbox index once a request names a few ids.
+	assert.match(plan, /USING INDEX sqlite_autoindex_messages_1 \(id=\?\)/, plan);
+});
+
+test("Email/get answers in the order asked, once per id", async () => {
+	const asked = [many[150], ids.emoji, "msg_missing", many[3], ids.emoji, many[99], "msg_missing"];
+	const result = await call("Email/get", { ids: asked, properties: ["id"] });
+	assert.deepEqual(result.list.map((item) => item.id), [many[150], ids.emoji, many[3], many[99]]);
+	assert.deepEqual(result.notFound, ["msg_missing"]);
 });
